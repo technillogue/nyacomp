@@ -98,14 +98,31 @@ float compress(const std::string filename) {
   // compression ratio
   float comp_ratio = (float)comp_size / (float)input_buffer_len;
 
+  // copy compressed buffer to host memory and then write it to a file
+  
+  std::ofstream comp_file("compressed.bin", std::ios::binary);
+  if (!comp_file.is_open()) {
+    throw std::runtime_error("Failed to open file: compressed.bin");
+  }
+
+  std::vector<uint8_t> comp_buffer_host(comp_size);
+  std::cout <<"doing cuda memcpy" << std::endl;
+  // copy compressed buffer to host memory using stream and syncronize to block for the copy to finish
+  CUDA_CHECK(cudaMemcpyAsync(comp_buffer_host.data(), comp_buffer, comp_size, cudaMemcpyDefault, stream));
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  std::cout <<"writing compressed buffer to file: " << "compressed.bin" << std::endl;
+  comp_file.write(reinterpret_cast<const char*>(comp_buffer_host.data()), comp_size);
+  comp_file.close();
+  
+
   CUDA_CHECK(cudaFree(comp_buffer));
   CUDA_CHECK(cudaFree(device_input_ptrs));
   CUDA_CHECK(cudaStreamDestroy(stream));
 
   std::cout << "compressed size: " << comp_size << std::endl;
   std::cout << "compression ratio: " << comp_ratio << std::endl;
+
   return comp_ratio;
-//  return comp_buffer;
 }
 
 
