@@ -13,12 +13,27 @@ __version__ = "0.0.1"
 #   Sort input source files if you glob sources to ensure bit-for-bit
 #   reproducible builds (https://github.com/pybind/python_example/pull/53)
 
+
+NVCOMP_INCLUDE_DIR = "/home/sylv/dryad/fast/py-nvcomp/_nvcomp/include"
+NVCOMP_LIB_NAME = "nvcomp"
+NVCOMP_LIB_DIR = "/home/sylv/dryad/fast/py-nvcomp/_nvcomp/lib"
+
+# CUDA_INCLUDE_DIR = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.3/include'
+CUDA_INCLUDE_DIR = "/usr/local/cuda-12.1/include"
+CUDA_LIB_NAME = "cudart"
+# CUDA_LIB_DIR = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.3/lib/x64'
+CUDA_LIB_DIR = "/usr/local/cuda-12.1/lib64"
+
 ext_modules = [
-    Pybind11Extension("python_example",
+    Pybind11Extension(
+        "python_example",
         ["src/main.cpp"],
         # Example: passing in the version to the compiled code
-        define_macros = [('VERSION_INFO', __version__)],
-        ),
+        define_macros=[("VERSION_INFO", __version__)],
+        include_dirs=[NVCOMP_INCLUDE_DIR, CUDA_INCLUDE_DIR],
+        libraries=[NVCOMP_LIB_NAME, CUDA_LIB_NAME],
+        library_dirs=[NVCOMP_LIB_DIR, CUDA_LIB_DIR],
+    ),
 ]
 
 setup(
