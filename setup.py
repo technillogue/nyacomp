@@ -30,9 +30,9 @@ ext_modules = [
         ["src/main.cpp"],
         # Example: passing in the version to the compiled code
         define_macros=[("VERSION_INFO", __version__)],
-        include_dirs=[NVCOMP_INCLUDE_DIR, CUDA_INCLUDE_DIR],
-        libraries=[NVCOMP_LIB_NAME, CUDA_LIB_NAME],
-        library_dirs=[NVCOMP_LIB_DIR, CUDA_LIB_DIR],
+        include_dirs=["/home/sylv/dryad/fast/py-nvcomp/_nvcomp/include", "/usr/local/cuda-12.1/include"],
+        libraries=["nvcomp", "cudart"],
+        library_dirs=["/home/sylv/dryad/fast/py-nvcomp/_nvcomp/lib", "/usr/local/cuda-12.1/lib64"],
     ),
 ]
 
@@ -51,4 +51,5 @@ setup(
     cmdclass={"build_ext": build_ext},
     zip_safe=False,
     python_requires=">=3.7",
+    data_files=[("python_example", ["../py-nvcomp/_nvcomp/lib/libnvcomp.so"])]
 )
