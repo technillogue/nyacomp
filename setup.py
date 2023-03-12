@@ -1,5 +1,6 @@
 # Available at setup time due to pyproject.toml
 from pybind11.setup_helpers import Pybind11Extension, build_ext
+from torch.utils.cpp_extension import BuildExtension, CppExtension
 from setuptools import setup
 
 __version__ = "0.0.1"
@@ -25,7 +26,7 @@ CUDA_LIB_NAME = "cudart"
 CUDA_LIB_DIR = "/usr/local/cuda-12.1/lib64"
 
 ext_modules = [
-    Pybind11Extension(
+    CppExtension(
         "python_example",
         ["src/main.cpp"],
         # Example: passing in the version to the compiled code
@@ -48,7 +49,7 @@ setup(
     extras_require={"test": "pytest"},
     # Currently, build_ext only provides an optional "highest supported C++
     # level" feature, but in the future it may provide more features.
-    cmdclass={"build_ext": build_ext},
+    cmdclass={"build_ext": BuildExtension},
     zip_safe=False,
     python_requires=">=3.7",
     data_files=[("python_example", ["../py-nvcomp/_nvcomp/lib/libnvcomp.so"])]

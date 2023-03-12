@@ -10,6 +10,7 @@
 #include <fstream>
 #include <vector>
 
+#include <torch/extension.h>
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
 
@@ -147,6 +148,7 @@ float decompress(const std::string filename) {
   decomp_nvcomp_manager->decompress(res_decomp_buffer, comp_buffer, decomp_config);
 
   CUDA_CHECK(cudaFree(comp_buffer));
+
   CUDA_CHECK(cudaFree(res_decomp_buffer));
 
   CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -155,6 +157,25 @@ float decompress(const std::string filename) {
   std::cout << "decompressed size: " << decomp_config.decomp_data_size << std::endl;
   return 1.0;
 }
+
+// torch::Tensor& make_tensor() {
+//     // auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+//     // auto tensor = torch::empty({1024 / sizeof(float)}, options);
+//     torch::Tensor tensor = torch::ones(5);
+//     // std::cout << "made tensor" << std::endl;
+//     return torch::ones(5);;
+// }
+std::shared_ptr<torch::Tensor> make_tensor() {
+    auto tensor = std::make_shared<torch::Tensor>(torch::ones(5));
+    std::cout << "made tensor" << std::endl;
+    return tensor;
+}
+
+// torch::Tensor make_tensor() {
+//     torch::Tensor tensor = torch::ones(5);
+//     return tensor;
+// }
+
 
 
 PYBIND11_MODULE(python_example, m) {
@@ -178,6 +199,11 @@ PYBIND11_MODULE(python_example, m) {
     m.def("decompress", &decompress, R"pbdoc(
         decompress
     )pbdoc",  py::arg("filename"));
+
+    m.def("make_tensor", &make_tensor, py::return_value_policy::copy);
+
+    // m.def("make_tensor", &make_tensor, "make_tensor");
+    
 
     m.def("subtract", [](int i, int j) { return i - j; }, R"pbdoc(
         Subtract two numbers
