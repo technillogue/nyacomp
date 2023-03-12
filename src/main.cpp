@@ -108,8 +108,7 @@ float compress(const std::string filename) {
   std::vector<uint8_t> comp_buffer_host(comp_size);
   std::cout <<"doing cuda memcpy" << std::endl;
   // copy compressed buffer to host memory using stream and syncronize to block for the copy to finish
-  CUDA_CHECK(cudaMemcpyAsync(comp_buffer_host.data(), comp_buffer, comp_size, cudaMemcpyDefault, stream));
-  CUDA_CHECK(cudaStreamSynchronize(stream));
+  CUDA_CHECK(cudaMemcpy(comp_buffer_host.data(), comp_buffer, comp_size, cudaMemcpyDefault));
   std::cout <<"writing compressed buffer to file: " << "compressed.bin" << std::endl;
   comp_file.write(reinterpret_cast<const char*>(comp_buffer_host.data()), comp_size);
   comp_file.close();
@@ -123,6 +122,38 @@ float compress(const std::string filename) {
   std::cout << "compression ratio: " << comp_ratio << std::endl;
 
   return comp_ratio;
+}
+
+float decompress(const std::string filename) {
+  std::vector<uint8_t> compressed_data;
+  size_t input_buffer_len;
+  std::tie(compressed_data, input_buffer_len) = load_file(filename);
+  std::cout << "read " << input_buffer_len << " bytes from " << filename << std::endl;
+
+
+  uint8_t* comp_buffer;
+  CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
+  CUDA_CHECK(cudaMemcpy(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault));
+
+  cudaStream_t stream;
+  CUDA_CHECK(cudaStreamCreate(&stream));
+
+  auto decomp_nvcomp_manager = create_manager(comp_buffer, stream);
+
+  DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
+  uint8_t* res_decomp_buffer;
+  CUDA_CHECK(cudaMalloc(&res_decomp_buffer, decomp_config.decomp_data_size));
+
+  decomp_nvcomp_manager->decompress(res_decomp_buffer, comp_buffer, decomp_config);
+
+  CUDA_CHECK(cudaFree(comp_buffer));
+  CUDA_CHECK(cudaFree(res_decomp_buffer));
+
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+
+  CUDA_CHECK(cudaStreamDestroy(stream));
+  std::cout << "decompressed size: " << decomp_config.decomp_data_size << std::endl;
+  return 1.0;
 }
 
 
@@ -142,6 +173,10 @@ PYBIND11_MODULE(python_example, m) {
 
     m.def("compress", &compress, R"pbdoc(
         compress
+    )pbdoc",  py::arg("filename"));
+
+    m.def("decompress", &decompress, R"pbdoc(
+        decompress
     )pbdoc",  py::arg("filename"));
 
     m.def("subtract", [](int i, int j) { return i - j; }, R"pbdoc(
