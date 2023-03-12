@@ -52,5 +52,5 @@ setup(
     cmdclass={"build_ext": BuildExtension},
     zip_safe=False,
     python_requires=">=3.7",
-    data_files=[("python_example", ["../py-nvcomp/_nvcomp/lib/libnvcomp.so"])]
+    package_data={"python_example": ["lib/libnvcomp.so"]},
 )

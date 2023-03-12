@@ -27,14 +27,15 @@ namespace py = pybind11;
     }                                                                         \
   } while (false)
 
-// #define TIMER(name, body) \
-//   do { \
-//       std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now(); \
-//       body \
-//       std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); \
-//       std::cout << name << " time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() << "[ms]" << std::endl; \
-//   } while (false)
-
+/*
+#define TIMER(name, body) \
+  do { \
+      std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now(); \
+      body \
+      std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); \
+      std::cout << name << " time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() << "[ms]" << std::endl; \
+  } while (false)
+*/
 
 std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
@@ -139,10 +140,12 @@ torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
   size_t input_buffer_len;
   std::tie(compressed_data, input_buffer_len) = load_file(filename);
   std::cout << "read " << input_buffer_len << " bytes from " << filename << std::endl;
-
+  std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
   uint8_t* comp_buffer;
   CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
   CUDA_CHECK(cudaMemcpy(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault));
+  std::chrono::steady_clock::time_point copy_end = std::chrono::steady_clock::now();
+  std::cout << "copying compressed bytes to gpu took: " << std::chrono::duration_cast<std::chrono::microseconds>(copy_end - copy_begin).count() << "[µs]" << std::endl;
 
   cudaStream_t stream;
   CUDA_CHECK(cudaStreamCreate(&stream));
@@ -153,13 +156,13 @@ torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
   // auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
   // torch::Tensor tensor = torch::empty({decomp_config.decomp_data_size}, tensor_options);
   std::cout << "decompressing into tensor of size " << decomp_config.decomp_data_size << std::endl;
-  std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now(); \
+  std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
   decomp_nvcomp_manager->decompress(tensor.data_ptr<uint8_t>(), comp_buffer, decomp_config);
 
   // CUDA_CHECK(cudaFree(comp_buffer));
 
   CUDA_CHECK(cudaStreamSynchronize(stream));
-  std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); \
+  std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); 
 
   std::cout << "decompression time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;  // std::cout << "synced" << std::endl;
   CUDA_CHECK(cudaStreamDestroy(stream));
