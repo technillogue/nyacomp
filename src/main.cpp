@@ -125,7 +125,7 @@ float compress(const std::string filename) {
   return comp_ratio;
 }
 
-float decompress(const std::string filename) {
+torch::Tensor decompress(const std::string filename) {
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
   std::tie(compressed_data, input_buffer_len) = load_file(filename);
@@ -149,13 +149,18 @@ float decompress(const std::string filename) {
 
   CUDA_CHECK(cudaFree(comp_buffer));
 
-  CUDA_CHECK(cudaFree(res_decomp_buffer));
 
-  CUDA_CHECK(cudaStreamSynchronize(stream));
-
-  CUDA_CHECK(cudaStreamDestroy(stream));
-  std::cout << "decompressed size: " << decomp_config.decomp_data_size << std::endl;
-  return 1.0;
+  {
+    auto options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
+    // create and return torch tensor from the decompressed buffer
+    torch::Tensor tensor = torch::from_blob(res_decomp_buffer, {decomp_config.decomp_data_size}, options).clone();
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+    CUDA_CHECK(cudaFree(res_decomp_buffer));
+    CUDA_CHECK(cudaStreamDestroy(stream));
+    return tensor;
+  }
+  // std::cout << "decompressed size: " << decomp_config.decomp_data_size << std::endl;
+  // return 1.0;
 }
 
 // torch::Tensor& make_tensor() {
@@ -165,17 +170,21 @@ float decompress(const std::string filename) {
 //     // std::cout << "made tensor" << std::endl;
 //     return torch::ones(5);;
 // }
-std::shared_ptr<torch::Tensor> make_tensor() {
-    auto tensor = std::make_shared<torch::Tensor>(torch::ones(5));
-    std::cout << "made tensor" << std::endl;
-    return tensor;
-}
+  // std::shared_ptr<torch::Tensor> make_tensor() {
+  //     auto tensor = std::make_shared<torch::Tensor>(torch::ones(5));
+  //     std::cout << "made tensor" << std::endl;
+  //     return tensor;
+  // }
 
 // torch::Tensor make_tensor() {
-//     torch::Tensor tensor = torch::ones(5);
+//     auto tensor = torch::ones(5);
 //     return tensor;
 // }
 
+torch::Tensor d_sigmoid(torch::Tensor z) {
+  auto s = torch::sigmoid(z);
+  return (1 - s) * s;
+}
 
 
 PYBIND11_MODULE(python_example, m) {
@@ -199,11 +208,12 @@ PYBIND11_MODULE(python_example, m) {
     m.def("decompress", &decompress, R"pbdoc(
         decompress
     )pbdoc",  py::arg("filename"));
+    m.def("sigmoid", &d_sigmoid, "sigmod fn");
 
-    m.def("make_tensor", &make_tensor, py::return_value_policy::copy);
 
-    // m.def("make_tensor", &make_tensor, "make_tensor");
-    
+    // m.def("make_tensor", &make_tensor, py::return_value_policy::automatic);
+
+    m.def("make_tensor", &make_tensor, "make_tensor");
 
     m.def("subtract", [](int i, int j) { return i - j; }, R"pbdoc(
         Subtract two numbers
