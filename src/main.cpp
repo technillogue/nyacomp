@@ -27,6 +27,14 @@ namespace py = pybind11;
     }                                                                         \
   } while (false)
 
+// #define TIMER(name, body) \
+//   do { \
+//       std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now(); \
+//       body \
+//       std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); \
+//       std::cout << name << " time: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() << "[ms]" << std::endl; \
+//   } while (false)
+
 
 std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
@@ -107,7 +115,7 @@ float compress(const std::string filename) {
   }
 
   std::vector<uint8_t> comp_buffer_host(comp_size);
-  std::cout <<"doing cuda memcpy" << std::endl;
+  // std::cout <<"doing cuda memcpy" << std::endl;
   // copy compressed buffer to host memory using stream and syncronize to block for the copy to finish
   CUDA_CHECK(cudaMemcpy(comp_buffer_host.data(), comp_buffer, comp_size, cudaMemcpyDefault));
   std::cout <<"writing compressed buffer to file: " << "compressed.bin" << std::endl;
@@ -120,17 +128,17 @@ float compress(const std::string filename) {
   CUDA_CHECK(cudaStreamDestroy(stream));
 
   std::cout << "compressed size: " << comp_size << std::endl;
-  std::cout << "compression ratio: " << comp_ratio << std::endl;
+  // std::cout << "compression ratio: " << comp_ratio << std::endl;
 
   return comp_ratio;
 }
 
-torch::Tensor decompress(const std::string filename) {
+torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
+  // tensor has to be same size
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
   std::tie(compressed_data, input_buffer_len) = load_file(filename);
   std::cout << "read " << input_buffer_len << " bytes from " << filename << std::endl;
-
 
   uint8_t* comp_buffer;
   CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
@@ -142,26 +150,24 @@ torch::Tensor decompress(const std::string filename) {
   auto decomp_nvcomp_manager = create_manager(comp_buffer, stream);
 
   DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
-  uint8_t* res_decomp_buffer;
-  CUDA_CHECK(cudaMalloc(&res_decomp_buffer, decomp_config.decomp_data_size));
+  // auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
+  // torch::Tensor tensor = torch::empty({decomp_config.decomp_data_size}, tensor_options);
+  std::cout << "decompressing into tensor of size " << decomp_config.decomp_data_size << std::endl;
+  std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now(); \
+  decomp_nvcomp_manager->decompress(tensor.data_ptr<uint8_t>(), comp_buffer, decomp_config);
 
-  decomp_nvcomp_manager->decompress(res_decomp_buffer, comp_buffer, decomp_config);
+  // CUDA_CHECK(cudaFree(comp_buffer));
 
-  CUDA_CHECK(cudaFree(comp_buffer));
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+  std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); \
 
+  std::cout << "decompression time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;  // std::cout << "synced" << std::endl;
+  CUDA_CHECK(cudaStreamDestroy(stream));
 
-  {
-    auto options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
-    // create and return torch tensor from the decompressed buffer
-    torch::Tensor tensor = torch::from_blob(res_decomp_buffer, {decomp_config.decomp_data_size}, options).clone();
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-    CUDA_CHECK(cudaFree(res_decomp_buffer));
-    CUDA_CHECK(cudaStreamDestroy(stream));
-    return tensor;
-  }
-  // std::cout << "decompressed size: " << decomp_config.decomp_data_size << std::endl;
-  // return 1.0;
+  return tensor;
 }
+
+
 
 // torch::Tensor& make_tensor() {
 //     // auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
@@ -180,6 +186,12 @@ torch::Tensor decompress(const std::string filename) {
 //     auto tensor = torch::ones(5);
 //     return tensor;
 // }
+torch::Tensor make_tensor() {
+  auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
+  torch::Tensor tensor = torch::empty({100}, tensor_options);
+  return tensor;
+}
+
 
 torch::Tensor d_sigmoid(torch::Tensor z) {
   auto s = torch::sigmoid(z);
@@ -207,7 +219,7 @@ PYBIND11_MODULE(python_example, m) {
 
     m.def("decompress", &decompress, R"pbdoc(
         decompress
-    )pbdoc",  py::arg("filename"));
+    )pbdoc",  py::arg("filename"), py::arg("dest_tensor"));
     m.def("sigmoid", &d_sigmoid, "sigmod fn");
 
 
