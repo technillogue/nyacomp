@@ -222,19 +222,8 @@ torch::Tensor d_sigmoid(torch::Tensor z) {
 }
 
 
-PYBIND11_MODULE(python_example, m) {
-    m.doc() = R"pbdoc(
-        Pybind11 example plugin
-        -----------------------
-
-        .. currentmodule:: python_example
-
-        .. autosummary::
-           :toctree: _generate
-
-           add
-           subtract
-    )pbdoc";
+PYBIND11_MODULE(_nyacomp, m) {
+    m.doc() = R"python bindings for nvcomp with torch";
 
     m.def("compress", &compress, R"pbdoc(
         compress
@@ -243,18 +232,18 @@ PYBIND11_MODULE(python_example, m) {
     m.def("decompress", &decompress, R"pbdoc(
         decompress
     )pbdoc",  py::arg("filename"), py::arg("dest_tensor"));
-    m.def("sigmoid", &d_sigmoid, "sigmod fn");
 
+    // m.def("sigmoid", &d_sigmoid, "sigmod fn");
 
     // m.def("make_tensor", &make_tensor, py::return_value_policy::automatic);
 
-    m.def("make_tensor", &make_tensor, "make_tensor");
+    // m.def("make_tensor", &make_tensor, "make_tensor");
 
-    m.def("subtract", [](int i, int j) { return i - j; }, R"pbdoc(
-        Subtract two numbers
+    // m.def("subtract", [](int i, int j) { return i - j; }, R"pbdoc(
+    //     Subtract two numbers
 
-        Some other explanation about the subtract function.
-    )pbdoc");
+    //     Some other explanation about the subtract function.
+    // )pbdoc");
 
 #ifdef VERSION_INFO
     m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
