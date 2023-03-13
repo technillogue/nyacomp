@@ -13,7 +13,7 @@ original_tensor = torch.ones(2**20, dtype=torch.uint8)
 filename = "input.bin"
 open(filename, "wb").write(b"\x01" * 2**20)
 print("=compressing=")
-python_example.compress(filename)
+python_example.compress(b"\x01" * 2**20, "compressed.bin")
 
 print("=decompressing=")
 comp_start = time.time()

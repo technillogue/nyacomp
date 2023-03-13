@@ -4,7 +4,6 @@
 #include "nvcomp/nvcompManagerFactory.hpp"
 
 #include <chrono>
-#include <random>
 #include <assert.h>
 #include <iostream>
 #include <fstream>
@@ -55,26 +54,17 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
 }
 
 
-//float compress(void* input_ptrs, size_t input_buffer_len) {
-float compress(const std::string filename) {
-  std::vector<uint8_t> uncompressed_data;
-  size_t input_buffer_len;
-  std::tie(uncompressed_data, input_buffer_len) = load_file(filename);
-  std::cout << "read " << input_buffer_len << " bytes from " << filename << std::endl;
+// float compress(const std::string input_filename) {
+//   std::vector<uint8_t> uncompressed_data;
+//   size_t input_buffer_len;
+//   std::tie(uncompressed_data, input_buffer_len) = load_file(filename);
+//   std::cout << "read " << input_buffer_len << " bytes from " << filename << std::endl;
 
-  // Initialize a random array of chars
-  // const size_t input_buffer_len = 1000000;
-  // std::vector<uint8_t> uncompressed_data(input_buffer_len);
-  
-  // std::mt19937 random_gen(42);
-
-  // // char specialization of std::uniform_int_distribution is
-  // // non-standard, and isn't available on MSVC, so use short instead,
-  // // but with the range limited, and then cast below.
-  // std::uniform_int_distribution<short> uniform_dist(0, 255);
-  // for (size_t ix = 0; ix < input_buffer_len; ++ix) {
-  //   uncompressed_data[ix] = static_cast<uint8_t>(uniform_dist(random_gen));
-  // }
+float compress(py::bytes pybytes, const std::string filename) {
+  std::string bytes_str = pybytes;
+  size_t input_buffer_len = bytes_str.size();
+  std::vector<uint8_t> uncompressed_data(bytes_str.data(), bytes_str.data() + input_buffer_len );
+  std::cout << "working with " << input_buffer_len << " uncompressed bytes" << std::endl;
 
   uint8_t* device_input_ptrs;
   CUDA_CHECK(cudaMalloc(&device_input_ptrs, input_buffer_len));
@@ -110,16 +100,16 @@ float compress(const std::string filename) {
 
   // copy compressed buffer to host memory and then write it to a file
   
-  std::ofstream comp_file("compressed.bin", std::ios::binary);
+  std::ofstream comp_file(filename, std::ios::binary);
   if (!comp_file.is_open()) {
-    throw std::runtime_error("Failed to open file: compressed.bin");
+    throw std::runtime_error("Failed to open file: " + filename);
   }
 
   std::vector<uint8_t> comp_buffer_host(comp_size);
   // std::cout <<"doing cuda memcpy" << std::endl;
   // copy compressed buffer to host memory using stream and syncronize to block for the copy to finish
   CUDA_CHECK(cudaMemcpy(comp_buffer_host.data(), comp_buffer, comp_size, cudaMemcpyDefault));
-  std::cout <<"writing compressed buffer to file: " << "compressed.bin" << std::endl;
+  std::cout << "writing compressed buffer to file: " << filename << std::endl;
   comp_file.write(reinterpret_cast<const char*>(comp_buffer_host.data()), comp_size);
   comp_file.close();
   
@@ -128,14 +118,23 @@ float compress(const std::string filename) {
   CUDA_CHECK(cudaFree(device_input_ptrs));
   CUDA_CHECK(cudaStreamDestroy(stream));
 
-  std::cout << "compressed size: " << comp_size << std::endl;
-  // std::cout << "compression ratio: " << comp_ratio << std::endl;
+  std::cout << "compressed size: " << comp_size << ", compression ratio: " << comp_ratio << std::endl;
 
   return comp_ratio;
 }
 
-torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
-  // tensor has to be same size
+torch::ScalarType type_for_name(std::string type_name) {
+  if (type_name == "uint8") return torch::kUInt8;
+   else if (type_name == "int8") return torch::kInt8;
+   else if (type_name == "int16") return torch::kInt16;
+   else if (type_name == "int32") return torch::kInt32;
+   else if (type_name == "int64") return torch::kInt64;
+   else if (type_name == "float32") return torch::kFloat32;
+   else if (type_name == "float64") return torch::kFloat64;
+   else throw std::runtime_error("Unknown type name: " + type_name);
+}
+
+torch::Tensor decompress(const std::string filename, torch::Tensor tensor, const std::string dtype) {
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
   std::tie(compressed_data, input_buffer_len) = load_file(filename);
@@ -153,23 +152,47 @@ torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
   auto decomp_nvcomp_manager = create_manager(comp_buffer, stream);
 
   DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
-  // auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
-  // torch::Tensor tensor = torch::empty({decomp_config.decomp_data_size}, tensor_options);
   std::cout << "decompressing into tensor of size " << decomp_config.decomp_data_size << std::endl;
   std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-  decomp_nvcomp_manager->decompress(tensor.data_ptr<uint8_t>(), comp_buffer, decomp_config);
 
-  // CUDA_CHECK(cudaFree(comp_buffer));
+  torch::ScalarType c_dtype = type_for_name(dtype);
 
+  // uint8_t* decomp_buffer;
+  // CUDA_CHECK(cudaMalloc(&comp_buffer, comp_config.max_compressed_buffer_size));
+  auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
+  torch::Tensor decomp_data = torch::empty({decomp_config.decomp_data_size}, tensor_options);
+
+  // torch::Tensor decomp_data = torch::empty(tensor.sizes(), torch::TensorOptions().dtype(torch::kUInt8).device(tensor.device()));
+  
+  decomp_nvcomp_manager->decompress(decomp_data.data_ptr<uint8_t>(), comp_buffer, decomp_config);
   CUDA_CHECK(cudaStreamSynchronize(stream));
   std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); 
-
   std::cout << "decompression time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;  // std::cout << "synced" << std::endl;
+  // create a new tensor using from_blob by passing the same data_ptr, to reinterpret the same data as the correct dtype
+  torch::Tensor decomp_tensor = torch::from_blob(decomp_data.data_ptr(), tensor.sizes(), tensor.options());
+  std::cout << "did from_blob" << std::endl;
+
+  // std::cout << "tensor sizes: " << tensor.sizes() << std::endl;
+  // std::cout << "decomp_tensor sizes: " << decomp_tensor.sizes() << std::endl;
+  // std::cout << "tensor data_ptr: " << tensor.data_ptr() << std::endl;
+  // std::cout << "decomp_tensor data_ptr: " << decomp_tensor.data_ptr() << std::endl;
+
+   // tensor.copy_(decomp_tensor);
+ 
+  
+  // tensor.set_(decomp_data);
+  // Cast the decompressed data to the correct type before copying it to the output tensor
+  // tensor.copy_(decomp_data.to(tensor.dtype()).reshape(tensor.sizes()));
+  // CUDA_CHECK(cudaFree(comp_buffer));
+  std::cout << "copy made" << std::endl;
+
+  CUDA_CHECK(cudaStreamSynchronize(stream));
+
+  // std::cout << "decompression time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;  // std::cout << "synced" << std::endl;
   CUDA_CHECK(cudaStreamDestroy(stream));
 
-  return tensor;
+  return decomp_tensor;
 }
-
 
 
 // torch::Tensor& make_tensor() {
@@ -179,22 +202,23 @@ torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
 //     // std::cout << "made tensor" << std::endl;
 //     return torch::ones(5);;
 // }
-  // std::shared_ptr<torch::Tensor> make_tensor() {
-  //     auto tensor = std::make_shared<torch::Tensor>(torch::ones(5));
-  //     std::cout << "made tensor" << std::endl;
-  //     return tensor;
-  // }
+
+// std::shared_ptr<torch::Tensor> make_tensor() {
+//     auto tensor = std::make_shared<torch::Tensor>(torch::ones(5));
+//     std::cout << "made tensor" << std::endl;
+//     return tensor;
+// }
 
 // torch::Tensor make_tensor() {
 //     auto tensor = torch::ones(5);
 //     return tensor;
 // }
+
 torch::Tensor make_tensor() {
   auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
   torch::Tensor tensor = torch::empty({100}, tensor_options);
   return tensor;
 }
-
 
 torch::Tensor d_sigmoid(torch::Tensor z) {
   auto s = torch::sigmoid(z);
@@ -218,11 +242,11 @@ PYBIND11_MODULE(python_example, m) {
 
     m.def("compress", &compress, R"pbdoc(
         compress
-    )pbdoc",  py::arg("filename"));
+    )pbdoc",  py::arg("data"), py::arg("filename"));
 
     m.def("decompress", &decompress, R"pbdoc(
         decompress
-    )pbdoc",  py::arg("filename"), py::arg("dest_tensor"));
+    )pbdoc",  py::arg("filename"), py::arg("dest_tensor"), py::arg("dtype"));
     m.def("sigmoid", &d_sigmoid, "sigmod fn");
 
 
