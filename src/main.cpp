@@ -134,7 +134,7 @@ torch::ScalarType type_for_name(std::string type_name) {
    else throw std::runtime_error("Unknown type name: " + type_name);
 }
 
-torch::Tensor decompress(const std::string filename, torch::Tensor tensor, const std::string dtype) {
+torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
   std::tie(compressed_data, input_buffer_len) = load_file(filename);
@@ -155,45 +155,41 @@ torch::Tensor decompress(const std::string filename, torch::Tensor tensor, const
   std::cout << "decompressing into tensor of size " << decomp_config.decomp_data_size << std::endl;
   std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
-  torch::ScalarType c_dtype = type_for_name(dtype);
-
   // uint8_t* decomp_buffer;
-  // CUDA_CHECK(cudaMalloc(&comp_buffer, comp_config.max_compressed_buffer_size));
-  auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
-  torch::Tensor decomp_data = torch::empty({decomp_config.decomp_data_size}, tensor_options);
+  // CUDA_CHECK(cudaMalloc(&decomp_buffer, decomp_config.decomp_data_size));
+  // // auto tensor_options = torch::TensorOptions().dtype(tensor.dtype()).device(torch::kCUDA, 0);
+  // size_t element_size = torch::elementSize(torch::typeMetaToScalarType(tensor.dtype()));
+  // torch::Tensor decomp_data = torch::empty({decomp_config.decomp_data_size / element_size}, tensor.options());
 
-  // torch::Tensor decomp_data = torch::empty(tensor.sizes(), torch::TensorOptions().dtype(torch::kUInt8).device(tensor.device()));
-  
-  decomp_nvcomp_manager->decompress(decomp_data.data_ptr<uint8_t>(), comp_buffer, decomp_config);
+  // // torch::Tensor decomp_data = torch::empty(tensor.sizes(), torch::TensorOptions().dtype(torch::kUInt8).device(tensor.device()));
+  decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensor.data_ptr()), comp_buffer, decomp_config);
+  // // decomp_nvcomp_manager->decompress(decomp_data.data_ptr<uint8_t>(), comp_buffer, decomp_config);
+  // decomp_nvcomp_manager->decompress(decomp_buffer, comp_buffer, decomp_config);
   CUDA_CHECK(cudaStreamSynchronize(stream));
   std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now(); 
   std::cout << "decompression time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;  // std::cout << "synced" << std::endl;
   // create a new tensor using from_blob by passing the same data_ptr, to reinterpret the same data as the correct dtype
-  torch::Tensor decomp_tensor = torch::from_blob(decomp_data.data_ptr(), tensor.sizes(), tensor.options());
-  std::cout << "did from_blob" << std::endl;
+  // torch::Tensor decomp_tensor = torch::from_blob(decomp_buffer, tensor.sizes(), tensor.options());
+  // std::cout << "did from_blob" << std::endl;
 
   // std::cout << "tensor sizes: " << tensor.sizes() << std::endl;
   // std::cout << "decomp_tensor sizes: " << decomp_tensor.sizes() << std::endl;
   // std::cout << "tensor data_ptr: " << tensor.data_ptr() << std::endl;
   // std::cout << "decomp_tensor data_ptr: " << decomp_tensor.data_ptr() << std::endl;
-
-   // tensor.copy_(decomp_tensor);
- 
   
+  // tensor.copy_(decomp_tensor);
   // tensor.set_(decomp_data);
   // Cast the decompressed data to the correct type before copying it to the output tensor
   // tensor.copy_(decomp_data.to(tensor.dtype()).reshape(tensor.sizes()));
-  // CUDA_CHECK(cudaFree(comp_buffer));
-  std::cout << "copy made" << std::endl;
+  CUDA_CHECK(cudaFree(comp_buffer));
+  // std::cout << "copy made" << std::endl;
 
   CUDA_CHECK(cudaStreamSynchronize(stream));
 
   // std::cout << "decompression time: " << std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count() << "[µs]" << std::endl;  // std::cout << "synced" << std::endl;
   CUDA_CHECK(cudaStreamDestroy(stream));
-
-  return decomp_tensor;
+  return tensor;
 }
-
 
 // torch::Tensor& make_tensor() {
 //     // auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
@@ -246,7 +242,7 @@ PYBIND11_MODULE(python_example, m) {
 
     m.def("decompress", &decompress, R"pbdoc(
         decompress
-    )pbdoc",  py::arg("filename"), py::arg("dest_tensor"), py::arg("dtype"));
+    )pbdoc",  py::arg("filename"), py::arg("dest_tensor"));
     m.def("sigmoid", &d_sigmoid, "sigmod fn");
 
 

@@ -22,7 +22,7 @@ _SIZE = {
 
 def tensor_bytes(tensor: torch.Tensor) -> bytes:
     length = int(np.prod(tensor.shape).item())
-    bytes_per_item = _SIZE[tensor.dtype]
+    bytes_per_item = torch._utils._element_size(tensor.dtype)
 
     total_bytes = length * bytes_per_item
 
@@ -32,8 +32,6 @@ def tensor_bytes(tensor: torch.Tensor) -> bytes:
     data = np.ctypeslib.as_array(newptr, (total_bytes,))  # no internal copy
 
     return data.tobytes()
-
-
 
 
 def compress(model: torch.nn.Module, name: str = "model.pth") -> None:
@@ -62,16 +60,25 @@ def load_compressed(fname: str = "model.pth") -> torch.nn.Module:
         param.data = torch.empty(
             metadata[i]["shape"], dtype=metadata[i]["dtype"], device="cuda:0"
         )
-        nvcomp.decompress(f"tensors/{i}.lz4", param.data, str(metadata[i]["dtype"]).split(".")[1])
+        nvcomp.decompress(f"tensors/{i}.lz4", param.data)
     return model
 
-model = torch.load("/home/sylv/dryad/sprkpnt/vqgan/predict/reaction_predictor_no_gauss.pth", map_location="cuda").eval()
+
+model = torch.load(
+    "/home/sylv/dryad/sprkpnt/vqgan/predict/reaction_predictor_no_gauss.pth",
+    map_location="cuda",
+).eval()
 print("loaded model")
-#compress(model)
+# compress(model)
 new_model = load_compressed().eval()
 
-test_input = torch.zeros([768], device="cuda:0")
-print("zeros:", new_model(test_input).eq(model(test_input)))
-test_input = torch.ones([768], device="cuda:0")
-print("ones:", new_model(test_input).eq(model(test_input)))
+# test_input = torch.zeros([768], device="cuda:0")
+# print("zeros:", new_model(test_input).eq(model(test_input)))
+# test_input = torch.ones([768], device="cuda:0")
+# print("ones:", new_model(test_input).eq(model(test_input)))
 
+rainbow = torch.load("./rainbow_embed.pth").to("cuda:0").float()
+print("original reaction predictor score for 'rainbow':", model(rainbow))
+print("decompressed reaction predictor score for 'rainbow':", new_model(rainbow))
+
+#print((new_model(rainbow) == model(rainbow)).all())
