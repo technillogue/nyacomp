@@ -1,5 +1,5 @@
 #include <pybind11/pybind11.h>
-#include "nvcomp/lz4.hpp"
+#include "nvcomp/gdeflate.hpp"
 #include "nvcomp.hpp" 
 #include "nvcomp/nvcompManagerFactory.hpp"
 
@@ -60,7 +60,7 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
 //   std::tie(uncompressed_data, input_buffer_len) = load_file(filename);
 //   std::cout << "read " << input_buffer_len << " bytes from " << filename << std::endl;
 
-float compress(py::bytes pybytes, const std::string filename) {
+int compress(py::bytes pybytes, const std::string filename) {
   std::string bytes_str = pybytes;
   size_t input_buffer_len = bytes_str.size();
   std::vector<uint8_t> uncompressed_data(bytes_str.data(), bytes_str.data() + input_buffer_len );
@@ -78,7 +78,7 @@ float compress(py::bytes pybytes, const std::string filename) {
   const int chunk_size = 1 << 16;
   nvcompType_t data_type = NVCOMP_TYPE_CHAR;
 
-  LZ4Manager nvcomp_manager{chunk_size, data_type, stream};
+  GdeflateManager nvcomp_manager{chunk_size, data_type, stream};
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);
   uint8_t* comp_buffer;
   CUDA_CHECK(cudaMalloc(&comp_buffer, comp_config.max_compressed_buffer_size));
@@ -120,7 +120,7 @@ float compress(py::bytes pybytes, const std::string filename) {
 
   std::cout << "compressed size: " << comp_size << ", compression ratio: " << comp_ratio << std::endl;
 
-  return comp_ratio;
+  return comp_size;
 }
 
 torch::ScalarType type_for_name(std::string type_name) {
