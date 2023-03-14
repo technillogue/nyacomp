@@ -223,7 +223,7 @@ torch::Tensor d_sigmoid(torch::Tensor z) {
 
 
 PYBIND11_MODULE(_nyacomp, m) {
-    m.doc() = R"python bindings for nvcomp with torch";
+    m.doc() = R"pbdoc(python bindings for nvcomp with torch)pbdoc";
 
     m.def("compress", &compress, R"pbdoc(
         compress

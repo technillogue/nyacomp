@@ -37,14 +37,13 @@ ext_modules = [
     ),
 ]
 
+import pdb
+pdb.set_trace()
 setup(
     name="nyacomp",
     version=__version__,
     author="sylv",
-    author_email="",
-    #url="https://github.com/pybind/python_example",
     description="python bindings for using nvcomp with torch",
-    #long_description="",
     ext_modules=ext_modules,
     #extras_require={"test": "pytest"},
     # Currently, build_ext only provides an optional "highest supported C++
@@ -53,5 +52,7 @@ setup(
     zip_safe=False,
     python_requires=">=3.7",
     packages=["nyacomp"],
+    package_dir={"": "."},
     package_data={"nyacomp": ["lib/libnvcomp.so"]},
+    include_package_data=True,
 )
