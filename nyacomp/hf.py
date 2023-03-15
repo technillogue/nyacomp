@@ -76,16 +76,19 @@ def load_compressed_state_dict(path: str = "model.pth") -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = []
         for key, value in state_dict.items():
             if isinstance(value, dict):  # maybe check for tensor specifically?
-                print("decompressing")
-                state_dict[key] = torch.empty(
+                # print("decompressing", key)
+                state_dict[key] = tensor = torch.empty(
                     value["shape"], dtype=value["dtype"], device="cuda:0"
                 )
-                executor.submit(_nyacomp.decompress, f"{dir / key}.gz", state_dict[key])
-            else:
-                print("not decompressing", key)
-    print("exited pool")
+                fname = f"{dir / key}.gz"
+                futures.append(executor.submit(_nyacomp.decompress, fname, tensor))
+            # else:
+            #     print("not decompressing", key)
+        copy, decomp = map(sum, zip(*[future.result() for future in futures]))
+        print(f"total copy time: {copy/1000}ms, total decomp time: {decomp/1000}ms")
     return state_dict
 
 
@@ -93,7 +96,7 @@ diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_
 diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
 import nyacomp
 
-with nyacomp.timer("awa"):
+with nyacomp.timer("load_compressed"):
     model = diffusers.StableDiffusionPipeline.from_pretrained(
         torch_dtype=torch.float16,
         revision="fp16",
