@@ -31,28 +31,40 @@ ext_modules = [
         ["src/main.cpp"],
         # Example: passing in the version to the compiled code
         define_macros=[("VERSION_INFO", __version__)],
-        include_dirs=["/home/sylv/dryad/fast/py-nvcomp/_nvcomp/include", "/usr/local/cuda-12.1/include"],
+        include_dirs=[
+            "nvcomp/include",
+            "/usr/local/cuda/include",
+        ],
         libraries=["nvcomp", "cudart"],
-        library_dirs=["/home/sylv/dryad/fast/py-nvcomp/_nvcomp/lib", "/usr/local/cuda-12.1/lib64"],
+        library_dirs=[
+            "nvcomp/lib",
+            "/usr/local/cuda/lib64",
+        ],
     ),
 ]
 
-import pdb
-pdb.set_trace()
+# import pdb
+# pdb.set_trace()
 setup(
     name="nyacomp",
     version=__version__,
     author="sylv",
     description="python bindings for using nvcomp with torch",
     ext_modules=ext_modules,
-    #extras_require={"test": "pytest"},
+    # extras_require={"test": "pytest"},
     # Currently, build_ext only provides an optional "highest supported C++
     # level" feature, but in the future it may provide more features.
     cmdclass={"build_ext": BuildExtension},
     zip_safe=False,
     python_requires=">=3.7",
     packages=["nyacomp"],
-    package_dir={"": "."},
-    package_data={"nyacomp": ["lib/libnvcomp.so"]},
+    # package_dir={"": "."},
+    package_data={
+        "nyacomp": [
+            "lib/libnvcomp_bitcomp.so",
+            "lib/libnvcomp_gdeflate.so",
+            "lib/libnvcomp.so",
+        ]
+    },
     include_package_data=True,
 )

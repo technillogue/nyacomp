@@ -134,6 +134,13 @@ torch::ScalarType type_for_name(std::string type_name) {
    else throw std::runtime_error("Unknown type name: " + type_name);
 }
 
+// maybe just decompress from an arbitrary stream + length?
+// doing an r2 call with a library probably sucks
+// can you just get a fd?
+// or a python iterator...?
+// maybe you can go into python to grab an http library
+// 
+
 torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
@@ -141,6 +148,14 @@ torch::Tensor decompress(const std::string filename, torch::Tensor tensor) {
   std::cout << "read " << input_buffer_len << " bytes from " << filename << std::endl;
   std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
   uint8_t* comp_buffer;
+  // while file is not eof or length not reached
+  // read file into buffer
+  // cudaMemcpy 128kb ?
+  // i5: L1 90K L2 2MB L3 24MB
+  // 3090: L1 128kb L2 6MB
+  // check if there's a significant overhead on extra number of copies
+  // and either 4kb, 128kb or 2-4MB
+  // sd unet is 1.7 GB, vae 580MB, clip 235MB
   CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
   CUDA_CHECK(cudaMemcpy(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault));
   std::chrono::steady_clock::time_point copy_end = std::chrono::steady_clock::now();
