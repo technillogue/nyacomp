@@ -6,11 +6,13 @@ import time
 from typing import Iterator
 import numpy as np
 import concurrent
+from pathlib import Path
 
 # import pycuda.autoinit
 import torch
 import _nyacomp
 import diffusers
+
 
 @contextlib.contextmanager
 def timer(msg: str) -> Iterator[None]:
@@ -32,47 +34,70 @@ def tensor_bytes(tensor: torch.Tensor) -> bytes:
 
 
 def compress_model():
-    components = Path("~/.cache/huggingface/diffusers/").expanduser().glob("*/snapshots/**/*bin")
-    for component in components:
-        compress_state_dict(component)
+    components = (
+        Path("~/.cache/huggingface/diffusers/").expanduser().glob("*/snapshots/**/*bin")
+    )
+    total_size, total_compressed_size = 0, 0
+    for component in list(components):
+        if "nya" in str(component) or "boneless" in str(component):
+            continue
+        size, comp_size = compress_state_dict(component)
+        total_size += size
+        total_compressed_size += comp_size
+    print("all components ratio:", total_compressed_size / total_size)
 
 
-def compress_state_dict(_path: str, treshold: int = 16000) -> float:
-    path = pathlib.Path(_path)
+def compress_state_dict(_path: str, treshold: int = 16000) -> (int, int):
+    path = Path(_path)
     state_dict = torch.load(path)
 
-    total_size = 0.0
+    total_size = 0
     total_compressed_size = 0
     dir = path.parent / "nya"
-    dir.mkdir(exists_ok=True)
+    dir.mkdir(exist_ok=True)
 
     for key, value in state_dict.items():
         data = tensor_bytes(value.detach().cpu())  # gah
-        total_size += float(len(data))
-        if len(data) > treshold: 
+        total_size += len(data)
+        if len(data) > treshold:
             print(f"compressing parameter {key}")
             total_compressed_size += _nyacomp.compress(data, f"{dir / key}.gz")
-            state_dict[key] = {"shape": param.shape, "dtype": param.dtype}
-            param.data = torch.tensor([], dtype=param.dtype)
+            state_dict[key] = {"shape": value.shape, "dtype": value.dtype}
+            # param.data = torch.tensor([], dtype=param.dtype)
         else:
             total_compressed_size += len(data)
     print("overall tensor size: ", total_size)
-    print("overall compression ratio:", total_compressed_size / total_size)
-    torch.save(model, dir / f"boneless_{path.name}")
-    return total_compressed_size / total_size
+    print("overall compression ratio:", total_compressed_size / float(total_size))
+    torch.save(state_dict, dir / f"boneless_{path.name}")
+    return (total_size, total_compressed_size)
 
 
 def load_compressed_state_dict(path: str = "model.pth") -> dict:
-    state_dict = torch.load(fname)
-    dir = pathlib.Path(path).parent / "nya"
+    dir = Path(path).parent / "nya"
+    state_dict = torch.load(dir / f"boneless_{Path(path).name}")
     with concurrent.futures.ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
         for key, value in state_dict.items():
             if isinstance(value, dict):  # maybe check for tensor specifically?
+                print("decompressing")
                 state_dict[key] = torch.empty(
                     value["shape"], dtype=value["dtype"], device="cuda:0"
                 )
-                executor.submit(_nyacomp.decompress, f"{dir / key}.gz", param.data)
+                executor.submit(_nyacomp.decompress, f"{dir / key}.gz", state_dict[key])
+            else:
+                print("not decompressing", key)
+    print("exited pool")
     return state_dict
+
 
 diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
 diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
+import nyacomp
+
+with nyacomp.timer("awa"):
+    model = diffusers.StableDiffusionPipeline.from_pretrained(
+        torch_dtype=torch.float16,
+        revision="fp16",
+        safety_checker=None,
+        pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4",
+        local_files_only=True,
+    )
