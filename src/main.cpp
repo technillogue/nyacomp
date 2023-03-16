@@ -178,6 +178,7 @@ std::pair<int, int> decompress(const std::string filename, torch::Tensor tensor)
 
   decomp_nvcomp_manager->decompress(static_cast<uint8_t *>(tensor.data_ptr()), comp_buffer, decomp_config);
   CUDA_CHECK(cudaStreamSynchronize(stream));
+
   std::chrono::microseconds decomp_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin);
   log("copy time: " + std::to_string(copy_time.count()) + "[µs], decompression time: " + std::to_string(decomp_time.count()) + "[µs]");
   CUDA_CHECK(cudaFree(comp_buffer));
@@ -306,16 +307,16 @@ void batch_decompress_threaded(const std::vector<std::string>& filenames, const 
       std::vector<uint8_t> compressed_data;
       size_t input_buffer_len;
       std::tie(compressed_data, input_buffer_len) = load_file(filenames[i]);
-      uint8_t* comp_buffer;
-      CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
-      log("malloced buffer");
-      auto decomp_nvcomp_manager = create_manager(comp_buffer);
-      log("create_manager");
-      DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
-      log("configured");
+      
+      futures.push_back(std::async(std::launch::async, [&, i, compressed_data = std::move(compressed_data), input_buffer_len]() {
+          uint8_t* comp_buffer;
+          CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
+          log("malloced buffer");
+          auto decomp_nvcomp_manager = create_manager(comp_buffer);
+          log("create_manager");
+          DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
+          log("configured");
 
-      futures.push_back(std::async(std::launch::async, [&, i]() {
-          log("started future");
           cudaStream_t stream;
           log("stream");
           CUDA_CHECK(cudaStreamCreate(&stream));
@@ -349,9 +350,9 @@ void batch_decompress_threaded(const std::vector<std::string>& filenames, const 
   for (auto& s : streams) {
       CUDA_CHECK(cudaStreamDestroy(s));
   }
-
   log("total copy time: " + std::to_string(total_copy_time) + "[µs], total decomp time: " + std::to_string(total_decomp_time) + "[µs]");
 }
+
 
 
 
@@ -362,9 +363,10 @@ void batch_decompress_threaded(const std::vector<std::string>& filenames, const 
 //     return tensor;
 // }
 
-torch::Tensor make_tensor() {
+torch::Tensor make_tensor(torch::Tensor foo) {
   auto tensor_options = torch::TensorOptions().dtype(torch::kUInt8).device(torch::kCUDA, 0);
   torch::Tensor tensor = torch::empty({100}, tensor_options);
+  //foo.data = tensor
   return tensor;
 }
 
@@ -400,7 +402,7 @@ PYBIND11_MODULE(_nyacomp, m)
 
   // m.def("sigmoid", &d_sigmoid, "sigmod fn");
 
-  // m.def("make_tensor", &make_tensor, py::return_value_policy::automatic);
+  m.def("make_tensor", &make_tensor, py::return_value_policy::take_ownership);
 
   // m.def("subtract", [](int i, int j) { return i - j; }, R"pbdoc(
   //     Subtract two numbers
