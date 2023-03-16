@@ -317,7 +317,8 @@ void batch_decompress_async(const std::vector<std::string> filenames, const std:
 std::vector<torch::Tensor> good_batch_decompress_threaded(
   const std::vector<std::string> filenames,
   const std::vector<std::vector<int64_t>> tensor_shapes,
-  const std::vector<std::string> dtypes
+  const std::vector<std::string> dtypes,
+  const std::vector<torch::Tensor> real_tensors
 ) {
   int total_copy_time = 0;
   int total_decomp_time = 0;
@@ -358,19 +359,32 @@ std::vector<torch::Tensor> good_batch_decompress_threaded(
           log("configured");
           auto options = torch::TensorOptions().dtype( type_for_name(dtypes[i])).device(torch::kCUDA);
           tensors[i] = torch::empty(tensor_shapes[i], options);
+
+
+          // print if tensors[i] and real_tensors[i] have equal same shape and dtype (can't print shape and dtype directly)
+          log("dtype matches: " + std::to_string(tensors[i].dtype() == real_tensors[i].dtype()));
+          log("shape matches: " + std::to_string(tensors[i].sizes() == real_tensors[i].sizes()));
           log("created empty tensor");
           std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
           CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
           std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
           log("memcopy time: " + std::to_string(copy_time.count()) + "[µs]");
           std::chrono::steady_clock::time_point decomp_begin = std::chrono::steady_clock::now();
-          // maybe decompress syncs the stream?
-          decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
+          // check if static_cast<uint8_t*>(real_tensors[i].data_ptr() is a valid pointer and not null
+          // assert(real_tensors[i].data_ptr() != nullptr);
+          auto empty_checksum = real_tensors[i].sum().item<int64_t>();
+
+
+          decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(real_tensors[i].data_ptr()), comp_buffer, decomp_config);
           
           std::chrono::microseconds decomp_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - decomp_begin);
           log("decomp time: " + std::to_string(decomp_time.count()) + "[µs]");
 
           CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
+          // get checksum for decompressed tensor
+          auto checksum = real_tensors[i].sum().item<int64_t>();
+          log("decompressed tensor with checksum: " + std::to_string(checksum) + "compared to empty tensor checksum: " + std::to_string(empty_checksum));
+
           // log("copy time: " + std::to_string(copy_time.count()) + "[µs], decompression time: " + std::to_string(decomp_time.count()) + "[µs]");
           total_copy_time += copy_time.count();
           total_decomp_time += decomp_time.count();
@@ -390,6 +404,7 @@ std::vector<torch::Tensor> good_batch_decompress_threaded(
   std::chrono::microseconds cuda_sync_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - cuda_sync_begin);
   log("cudaDeviceSynchronize took " + std::to_string(cuda_sync_time.count()) + "[µs]");
   for (auto& s : streams) {
+      CUDA_CHECK(cudaStreamSynchronize(s));
       CUDA_CHECK(cudaStreamDestroy(s));
   }
   log("total copy time: " + std::to_string(total_copy_time) + "[µs], total decomp time: " + std::to_string(total_decomp_time) + "[µs]");
@@ -398,63 +413,63 @@ std::vector<torch::Tensor> good_batch_decompress_threaded(
 }
 
 
-void batch_decompress_threaded(const std::vector<std::string>& filenames, const std::vector<torch::Tensor>& tensors) {
-  int total_copy_time = 0;
-  int total_decomp_time = 0;
-  std::vector<std::future<void>> futures;
-  std::vector<cudaStream_t> streams;
-  for (int i = 0; i < filenames.size(); i++) {
-      std::vector<uint8_t> compressed_data;
-      size_t input_buffer_len;
-      std::tie(compressed_data, input_buffer_len) = load_file(filenames[i]);
+// void batch_decompress_threaded(const std::vector<std::string>& filenames, const std::vector<torch::Tensor>& tensors) {
+//   int total_copy_time = 0;
+//   int total_decomp_time = 0;
+//   std::vector<std::future<void>> futures;
+//   std::vector<cudaStream_t> streams;
+//   for (int i = 0; i < filenames.size(); i++) {
+//       std::vector<uint8_t> compressed_data;
+//       size_t input_buffer_len;
+//       std::tie(compressed_data, input_buffer_len) = load_file(filenames[i]);
       
-      futures.push_back(std::async(std::launch::async, [&, i, compressed_data = std::move(compressed_data), input_buffer_len]() {
-          uint8_t* comp_buffer;
+//       futures.push_back(std::async(std::launch::async, [&, i, compressed_data = std::move(compressed_data), input_buffer_len]() {
+//           uint8_t* comp_buffer;
           
-          cudaStream_t stream;
-          log("stream");
-          CUDA_CHECK(cudaStreamCreate(&stream));
-          log("created stream");
+//           cudaStream_t stream;
+//           log("stream");
+//           CUDA_CHECK(cudaStreamCreate(&stream));
+//           log("created stream");
           
 
-          CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
-          log("malloced buffer");
-          auto decomp_nvcomp_manager = create_manager(comp_buffer, stream);
-          log("create_manager");
-          DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
-          log("configured");
+//           CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
+//           log("malloced buffer");
+//           auto decomp_nvcomp_manager = create_manager(comp_buffer, stream);
+//           log("create_manager");
+//           DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
+//           log("configured");
 
-          std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
-          CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
-          log("memcpy");
-          std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
+//           std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
+//           CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
+//           log("memcpy");
+//           std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
 
-          std::chrono::steady_clock::time_point decomp_begin = std::chrono::steady_clock::now();
-          decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
-          log("decomp");
-          std::chrono::microseconds decomp_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - decomp_begin);
+//           std::chrono::steady_clock::time_point decomp_begin = std::chrono::steady_clock::now();
+//           decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
+//           log("decomp");
+//           std::chrono::microseconds decomp_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - decomp_begin);
 
-          CUDA_CHECK(cudaFree(comp_buffer));
-          streams.push_back(stream);
-          // CUDA_CHECK(cudaStreamDestroy(stream));
+//           CUDA_CHECK(cudaFree(comp_buffer));
+//           streams.push_back(stream);
+//           // CUDA_CHECK(cudaStreamDestroy(stream));
 
-          log("copy time: " + std::to_string(copy_time.count()) + "[µs], decompression time: " + std::to_string(decomp_time.count()) + "[µs]");
-          total_copy_time += copy_time.count();
-          total_decomp_time += decomp_time.count();
-      }));
-      log("made future");
-  }
+//           log("copy time: " + std::to_string(copy_time.count()) + "[µs], decompression time: " + std::to_string(decomp_time.count()) + "[µs]");
+//           total_copy_time += copy_time.count();
+//           total_decomp_time += decomp_time.count();
+//       }));
+//       log("made future");
+//   }
 
-  log("launched all async operations, waiting for them to finish");
-  for (auto& f : futures) {
-      f.wait();
-  }
-  CUDA_CHECK(cudaDeviceSynchronize());
-  for (auto& s : streams) {
-      CUDA_CHECK(cudaStreamDestroy(s));
-  }
-  log("total copy time: " + std::to_string(total_copy_time) + "[µs], total decomp time: " + std::to_string(total_decomp_time) + "[µs]");
-}
+//   log("launched all async operations, waiting for them to finish");
+//   for (auto& f : futures) {
+//       f.wait();
+//   }
+//   CUDA_CHECK(cudaDeviceSynchronize());
+//   for (auto& s : streams) {
+//       CUDA_CHECK(cudaStreamDestroy(s));
+//   }
+//   log("total copy time: " + std::to_string(total_copy_time) + "[µs], total decomp time: " + std::to_string(total_decomp_time) + "[µs]");
+// }
 
 
 
@@ -500,8 +515,8 @@ PYBIND11_MODULE(_nyacomp, m)
     
   m.def("decompress_batch", &batch_decompress, "decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
   m.def("decompress_batch_async", &batch_decompress_async, "async decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
-  m.def("decompress_batch_threaded", &batch_decompress_threaded, "threaded decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
-  m.def("good_batch_decompress_threaded", &good_batch_decompress_threaded, "good decompress batch", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"));
+  // m.def("decompress_batch_threaded", &batch_decompress_threaded, "threaded decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
+  m.def("good_batch_decompress_threaded", &good_batch_decompress_threaded, "good decompress batch", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"), py::arg("tensors"));
 
 
   // m.def("sigmoid", &d_sigmoid, "sigmod fn");
