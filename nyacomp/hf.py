@@ -190,16 +190,28 @@ def batch_load_compressed_state_dict(path: str = "model.pth", fn="_async") -> di
     return state_dict
 
 
+def good_load(path: str) -> dict:
+    dir = Path(path).parent / "nya"
+    state_dict = torch.load(dir / f"boneless_{Path(path).name}")
+
+    keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
+    fnames = [f"{dir / key}.gz" for key in keys]
+    shapes = [list(state_dict[k]["shape"]) for k in keys]
+    dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
+
+    tensors = _nyacomp.good_batch_decompress_threaded(fnames, shapes, dtypes)
+    return state_dict | dict(zip(keys, tensors))
+
 diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
 diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
 import nyacomp
 guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/snapshots/*/*bin"))[0])
 # compress_state_dict(str(guy))
 if __name__=="__main__":
-    with nyacomp.timer("lazy:"):
-        dd=batch_load_compressed_state_dict(guy, "_threaded")
+    torch.cuda.synchronize()
+    #with nyacomp.timer("good:"):    dd=good_load(guy)
         #dd=asyncio.run(lazy_load(guy))#, "_threaded")
-    # with nyacomp.timer("torch:"): dd_t = torch.load(guy)
+    with nyacomp.timer("torch:"): dd_t = torch.load(guy, map_location="cuda:0")
 
 # with nyacomp.timer("load_compressed"):
 #     model = diffusers.StableDiffusionPipeline.from_pretrained(
