@@ -59,17 +59,25 @@ def test_batch():
     tensors = _nyacomp.decompress_batch_async([fname], [x_out])
     assert (x_out == x.cuda()).all()
 
+def test_batch_new():
+    x = torch.rand([512])
+    fname = "/tmp/test.gz"
+    _nyacomp.compress(tensor_bytes(x), fname)
+    tensors = _nyacomp.decompress_batch_async_new([fname], [[512]], ["float32"])
+    x_out = tensors[0]
+    assert (x_out == x.cuda()).all()
+
 
 #dtype = lambda t:str(t.dtype).removeprefix("torch.")
-floats = torch.rand([3])
-_nyacomp.compress(tensor_bytes(floats), "/tmp/t.gz")
-floats_out =  _nyacomp.good_batch_decompress_threaded(["/tmp/t.gz"], [[3]], ["float32"])
-print(floats, floats_out[0])
+# floats = torch.rand([3])
+# _nyacomp.compress(tensor_bytes(floats), "/tmp/t.gz")
+# floats_out =  _nyacomp.good_batch_decompress_threadpool(["/tmp/t.gz"], [[3]], ["float32"])
+# print(floats, floats_out[0])
 
-ints = torch.ones([3], dtype=torch.uint8)
-_nyacomp.compress(tensor_bytes(ints), "/tmp/t.gz")
-ints_out =  _nyacomp.good_batch_decompress_threaded(["/tmp/t.gz"], [[3]], ["uint8"])
-print(ints, ints_out[0])
+# ints = torch.ones([3], dtype=torch.uint8)
+# _nyacomp.compress(tensor_bytes(ints), "/tmp/t.gz")
+# ints_out =  _nyacomp.good_batch_decompress_threadpool(["/tmp/t.gz"], [[3]], ["uint8"])
+# print(ints, ints_out[0])
 
 
 # def good_roundtrip(tensor: torch.Tensor, fname: str = "/tmp/test.lz4") -> torch.Tensor():
@@ -107,6 +115,8 @@ print(ints, ints_out[0])
 # test_basic_roundtrip()
 # print("=============testing simple cuda-async-only batch")
 # test_batch()
+print("=============testing simple cuda-async-only + cpp tensor creation batch")
+test_batch_new()
 # print("=============testing roundtrip_new_tensor")
 # test_roundtrip_new_tensor()
 # print("=============testing good_roundtrip")
