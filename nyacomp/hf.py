@@ -206,7 +206,7 @@ diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_
 diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
 import nyacomp
 guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/snapshots/*/*bin"))[0])
-# compress_state_dict(str(guy))
+#compress_state_dict(str(guy))
 if __name__=="__main__":
     torch.cuda.synchronize()
     with nyacomp.timer("good:"):    dd=good_load(guy)
