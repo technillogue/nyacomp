@@ -60,7 +60,7 @@ def compress_components(components: list[Path]) -> None:
     print("all components ratio:", total_compressed_size / total_size)
 
 
-def compress_state_dict(_path: str, treshold: int = 32000) -> tuple[int, int]:
+def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
     path = Path(_path)
     state_dict = torch.load(path)
 
@@ -74,9 +74,14 @@ def compress_state_dict(_path: str, treshold: int = 32000) -> tuple[int, int]:
         total_size += len(data)
         if len(data) > treshold:
             print(f"compressing parameter {key}")
-            total_compressed_size += _nyacomp.compress(data, f"{dir / key}.gz")
-            state_dict[key] = {"shape": value.shape, "dtype": value.dtype}
-            # param.data = torch.tensor([], dtype=param.dtype)
+            new_size = _nyacomp.compress(data, f"{dir / key}.gz")
+            if new_size > len(data):
+                print("bad compression ratio despite heuristic, deleting ", key)
+                (dir / f"{key}.gz").unlink()
+            else:
+                total_compressed_size += new_size
+                state_dict[key] = {"shape": value.shape, "dtype": value.dtype}
+                # param.data = torch.tensor([], dtype=param.dtype)
         else:
             total_compressed_size += len(data)
     print("overall tensor size: ", total_size)
@@ -199,20 +204,24 @@ def good_load(path: str) -> dict:
     shapes = [list(state_dict[k]["shape"]) for k in keys]
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
 
-    #tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes)
-    tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
+    tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes)
+    #tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
 
 diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
 diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
 import nyacomp
 guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/snapshots/*/*bin"))[0])
-compress_state_dict(str(guy))
+print(guy)
+#compress_state_dict(str(guy))
 if __name__=="__main__":
     torch.cuda.synchronize()
-    with nyacomp.timer("good:"):    dd=good_load(guy)
+    #with nyacomp.timer("good:"):    dd=good_load(guy)
         #dd=asyncio.run(lazy_load(guy))#, "_threaded")
-    #with nyacomp.timer("torch:"): dd_t = torch.load(guy, map_location="cuda:0")
+    with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
+    with nyacomp.timer("cuda:"):
+        for v in dd_t.values():
+            v.cuda()
 
 # with nyacomp.timer("load_compressed"):
 #     model = diffusers.StableDiffusionPipeline.from_pretrained(

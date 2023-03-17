@@ -80,46 +80,43 @@ def test_batch_new():
 # print(ints, ints_out[0])
 
 
-# def good_roundtrip(tensor: torch.Tensor, fname: str = "/tmp/test.lz4") -> torch.Tensor():
-#     _nyacomp.compress(tensor_bytes(tensor), fname)
-#     dest = torch.empty(tensor.shape, dtype=tensor.dtype, device="cuda:0")
-#     results = _nyacomp.good_batch_decompress_threaded([fname], [list(tensor.shape)], [dtype(tensor)], [dest])
-#     print(dest)
-#     print(results[0])
-#     return results[0]#
+def good_roundtrip(tensor: torch.Tensor, fname: str = "/tmp/test.lz4") -> torch.Tensor():
+    _nyacomp.compress(tensor_bytes(tensor), fname)
+    results = _nyacomp.good_batch_decompress_threadpool([fname], [list(tensor.shape)], [dtype(tensor)])
+    print(results[0])
+    return results[0]#
 
-#     # dir = Path(path).parent / "nya"
-#     # state_dict = torch.load(dir / f"boneless_{Path(path).name}")
+    # dir = Path(path).parent / "nya"
+    # state_dict = torch.load(dir / f"boneless_{Path(path).name}")
 
-#     # keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
-#     # fnames = [f"{dir / key}.gz" for key in keys]
-#     # shapes = [list(state_dict[k]["shape"]) for k in keys]
-#     # dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
+    # keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
+    # fnames = [f"{dir / key}.gz" for key in keys]
+    # shapes = [list(state_dict[k]["shape"]) for k in keys]
+    # dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
 
-#     # tensors = _nyacomp.good_batch_decompress_threaded(fnames, shapes, dtypes)
-#     # return state_dict | dict(zip(keys, tensors))
+    # tensors = _nyacomp.good_batch_decompress_threaded(fnames, shapes, dtypes)
+    # return state_dict | dict(zip(keys, tensors))
 
-# def test_good_roundtrip():
-#     #roundtrip = basic_roundtrip
-#     y = torch.rand([16], dtype=torch.float32)
-#     print("float")
-#     y_t = good_roundtrip(y)
-#     print("float:",y_t.eq(y.cuda()).all())
-#     assert y_t.eq(y.cuda()).all()
-#     x = torch.ones([16], dtype=torch.uint8)
-#     x_t = good_roundtrip(x)
-#     print("int:", x_t.eq(x.cuda()).all())
+def test_good_roundtrip():
+    y = torch.rand([16], dtype=torch.float32)
+    print("float")
+    y_t = good_roundtrip(y)
+    print("float:",y_t.eq(y.cuda()).all())
+    assert y_t.eq(y.cuda()).all()
+    x = torch.ones([16], dtype=torch.uint8)
+    x_t = good_roundtrip(x)
+    print("int:", x_t.eq(x.cuda()).all())
 
 # torch.cuda.synchronize()
 
 # test_basic_roundtrip()
 # print("=============testing simple cuda-async-only batch")
 # test_batch()
-print("=============testing simple cuda-async-only + cpp tensor creation batch")
-test_batch_new()
+# print("=============testing simple cuda-async-only + cpp tensor creation batch")
+# test_batch_new()
 # print("=============testing roundtrip_new_tensor")
 # test_roundtrip_new_tensor()
-# print("=============testing good_roundtrip")
-# test_good_roundtrip()
+print("=============testing good_roundtrip")
+test_good_roundtrip()
 
 
