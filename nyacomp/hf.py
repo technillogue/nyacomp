@@ -199,7 +199,7 @@ def good_load(path: str) -> dict:
     shapes = [list(state_dict[k]["shape"]) for k in keys]
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
 
-    tensors = _nyacomp.good_batch_decompress_threaded(fnames, shapes, dtypes)
+    tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
 
 diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
@@ -209,9 +209,9 @@ guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/sn
 # compress_state_dict(str(guy))
 if __name__=="__main__":
     torch.cuda.synchronize()
-    #with nyacomp.timer("good:"):    dd=good_load(guy)
+    with nyacomp.timer("good:"):    dd=good_load(guy)
         #dd=asyncio.run(lazy_load(guy))#, "_threaded")
-    with nyacomp.timer("torch:"): dd_t = torch.load(guy, map_location="cuda:0")
+    #with nyacomp.timer("torch:"): dd_t = torch.load(guy, map_location="cuda:0")
 
 # with nyacomp.timer("load_compressed"):
 #     model = diffusers.StableDiffusionPipeline.from_pretrained(
