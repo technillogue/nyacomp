@@ -1,5 +1,8 @@
 #include <pybind11/pybind11.h>
 #include "nvcomp/gdeflate.hpp"
+// #include "nvcomp/cascaded.hpp"
+// #include "nvcomp/bitcomp.hpp"
+// #include "nvcomp/lz4.hpp"
 #include "nvcomp.hpp"
 #include "nvcomp/nvcompManagerFactory.hpp"
 
@@ -105,6 +108,7 @@ int compress(py::bytes pybytes, const std::string filename)
   const int chunk_size = 1 << 16;
   nvcompType_t data_type = NVCOMP_TYPE_CHAR;
 
+  // LZ4Manager nvcomp_manager{chunk_size, data_type, stream};
   GdeflateManager nvcomp_manager{chunk_size, data_type, stream};
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);
   uint8_t *comp_buffer;
@@ -538,23 +542,23 @@ torch::Tensor make_tensor(const std::vector<int64_t> &shape, const std::string &
 // simplify, use more idiomatic  C++. Pay attention to the code quality and correctness.
 
 
-std::pair<std::chrono::microseconds, uint8_t*> load_compressed_buffer(cudaStream_t stream, const std::string& filename, int ctx = -1) {
-    std::string prefix = ctx == -1 ? "" : std::to_string(ctx) + ": ";
-    std::vector<uint8_t> compressed_data;
-    size_t input_buffer_len;
-    std::tie(compressed_data, input_buffer_len) = load_file(filename);
+// std::pair<std::chrono::microseconds, uint8_t*> load_compressed_buffer(cudaStream_t stream, const std::string& filename, int ctx = -1) {
+//     std::string prefix = ctx == -1 ? "" : std::to_string(ctx) + ": ";
+//     std::vector<uint8_t> compressed_data;
+//     size_t input_buffer_len;
+//     std::tie(compressed_data, input_buffer_len) = load_file(filename);
 
-    uint8_t* comp_buffer;
-    CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
-    log(prefix + "malloced buffer");
-    CUDA_CHECK(cudaStreamCreate(&stream));
-    log(prefix + "created stream");
-    std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
-    CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
-    std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
-    log(prefix + "memcopy time: " + std::to_string(copy_time.count()) + "[µs]");
-    return std::make_pair(copy_time, comp_buffer);
-}
+//     uint8_t* comp_buffer;
+//     CUDA_CHECK(cudaMalloc(&comp_buffer, input_buffer_len));
+//     log(prefix + "malloced buffer");
+//     CUDA_CHECK(cudaStreamCreate(&stream));
+//     log(prefix + "created stream");
+//     std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
+//     CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
+//     std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
+//     log(prefix + "memcopy time: " + std::to_string(copy_time.count()) + "[µs]");
+//     return std::make_pair(copy_time, comp_buffer);
+// }
 
 std::vector<torch::Tensor> good_batch_decompress_threadpool(
     const std::vector<std::string> &filenames,
@@ -568,18 +572,20 @@ std::vector<torch::Tensor> good_batch_decompress_threadpool(
   std::chrono::steady_clock::time_point first_began = std::chrono::steady_clock::now();
   std::atomic<int> total_copy_time(0), total_decomp_time(0);
 
+  int num_files = (int)filenames.size();
+
   std::vector<std::future<void>> futures;
-  std::vector<torch::Tensor> tensors = std::vector<torch::Tensor>(filenames.size());
+  std::vector<torch::Tensor> tensors = std::vector<torch::Tensor>(num_files);
 
-  std::vector<cudaStream_t> streams(_streams != -1 ? _streams : (int)filenames.size());
-  std::vector<nvcompStatus_t *> statuses((int)filenames.size());
+  std::vector<cudaStream_t> streams(_streams != -1 ? _streams : (int)num_files); // 32?
+  std::vector<nvcompStatus_t *> statuses((int)num_files);
 
-  // int threads = std::min((uint)filenames.size(), std::thread::hardware_concurrency());
-  // int threads = std::max((uint)filenames.size(), std::thread::hardware_concurrency());
-  int threads = _threads != -1 ? _threads : (uint)filenames.size();
-  log("using " + std::to_string(threads) + " threads for " + std::to_string(filenames.size()) + " files");
+  // int threads = std::min((uint)num_files, std::thread::hardware_concurrency());
+  // int threads = std::max((uint)num_files, std::thread::hardware_concurrency());
+  int threads = _threads != -1 ? _threads : (uint)num_files;
+  log("using " + std::to_string(threads) + " threads for " + std::to_string(num_files) + " files");
   std::vector<std::vector<int>> thread_to_indexes(threads);
-  for (int i = 0; i < filenames.size(); i++)
+  for (int i = 0; i < num_files; i++)
     thread_to_indexes[i % threads].push_back(i);
 
   for (int thread_id = 0; thread_id < threads; thread_id++) {
@@ -665,6 +671,82 @@ std::vector<torch::Tensor> good_batch_decompress_threadpool(
 
   return tensors;
 }
+
+
+
+// std::vector<torch::Tensor> gpt_batch_decompress_threadpool(
+//     const std::vector<std::string> &filenames,
+//     const std::vector<std::vector<int64_t>> &tensor_shapes,
+//     const std::vector<std::string> &dtypes)
+// {
+//   auto start_time = std::chrono::steady_clock::now();
+
+//   if (filenames.size() != tensor_shapes.size() || filenames.size() != dtypes.size())
+//     throw std::invalid_argument("All input vectors should have the same size");
+
+//   int num_files = static_cast<int>(filenames.size());
+//   int num_threads = std::min(num_files, static_cast<int>(std::thread::hardware_concurrency()));
+
+//   log("Using " << num_threads << " threads for " << num_files << " files");
+
+//   std::vector<std::future<void>> futures;
+//   std::vector<torch::Tensor> tensors(num_files);
+
+//   std::vector<cudaStream_t> streams(num_threads);
+//   for (auto &stream : streams) {
+//     CUDA_CHECK(cudaStreamCreate(&stream));
+//   }
+
+//   std::vector<std::vector<int>> thread_to_indexes(num_threads);
+//   for (int i = 0; i < num_files; i++)
+//     thread_to_indexes[i % num_threads].push_back(i);
+
+//   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
+//     auto indexes = thread_to_indexes[thread_id];
+//     futures.emplace_back(std::async(std::launch::async, [&, indexes]() {
+//       for (int i : indexes) {
+//         auto file_start_time = std::chrono::steady_clock::now();
+
+//         cudaStream_t stream = streams[thread_id];
+
+//         auto [compressed_data, input_buffer_len] = load_file(filenames[i]);
+
+//         uint8_t* comp_buffer;
+//         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
+//         CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
+
+//         tensors[i] = make_tensor(tensor_shapes[i], dtypes[i]);
+
+//         auto decomp_nvcomp_manager = create_manager(comp_buffer, stream);
+//         DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
+//         decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
+
+//         CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
+
+//         auto file_end_time = std::chrono::steady_clock::now();
+//         auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(file_end_time - file_start_time).count();
+//         log("File " << i << " processed in " << file_elapsed_time << " ms");
+//       }
+//     }));
+//   }
+
+//   for (auto &f : futures)
+//     f.wait();
+
+//   for (auto &stream : streams) {
+//     CUDA_CHECK(cudaStreamSynchronize(stream));
+//     CUDA_CHECK(cudaStreamDestroy(stream));
+//   }
+
+//   CUDA_CHECK(cudaDeviceSynchronize());
+
+//   auto end_time = std::chrono::steady_clock::now();
+//   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+//   log("Total processing time: " << elapsed_time << " ms");
+
+//   return tensors;
+// }
+
 
 // void batch_decompress_threaded(const std::vector<std::string>& filenames, const std::vector<torch::Tensor>& tensors) {
 //   int total_copy_time = 0;

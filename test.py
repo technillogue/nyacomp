@@ -1,4 +1,4 @@
-import python_example
+import _nyacomp
 import torch
 import time
 import pickle
@@ -7,26 +7,26 @@ import pickle
 # gpu_array = pycuda.gpuarray.to_gpu(array)
 # size = array.size * array.itemsize
 
-original_tensor = torch.ones(2**20, dtype=torch.uint8)
+original_tensor = torch.ones(2**25, dtype=torch.uint8)
 
 
-filename = "input.bin"
-open(filename, "wb").write(b"\x01" * 2**10)
+#filename = "input.bin"
+#open(filename, "wb").write(b"\x01" * 2**25)
 print("=compressing=")
-python_example.compress(b"\x01" * 2**10, "compressed.bin")
+_nyacomp.compress(b"\x01" * 2**25, "compressed.bin")
 
 print("=decompressing=")
 comp_start = time.time()
-d= torch.empty(2**20, dtype=torch.uint8, device="cuda:0")
-decompressed_tensor = python_example.decompress("compressed.bin", d)
+d = torch.empty(2**25, dtype=torch.uint8, device="cuda:0")
+decompressed_tensor = _nyacomp.decompress("compressed.bin", d)
 print(f"loading with gpu decompression took {time.time() - comp_start:.4f}s")
-# torch.save(original_tensor, "/tmp/ones.pth")
-# unpickle_start = time.time()
-# unpickled = torch.load("/tmp/ones.pth")
-# print(f"torch.load took {time.time() - unpickle_start:.4f}s")
-# copy_start = time.time()
-# unpickled.cuda()
-# print(f".cuda() took {time.time() - copy_start:.4f}s")
-print("original_tensor.cuda().eq(decompressed_tensor).all(): ", original_tensor.cuda().eq(decompressed_tensor).all())
+torch.save(original_tensor, "/tmp/ones.pth")
+unpickle_start = time.time()
+unpickled = torch.load("/tmp/ones.pth")
+print(f"torch.load took {time.time() - unpickle_start:.4f}s")
+copy_start = time.time()
+unpickled.cuda()
+print(f".cuda() took {time.time() - copy_start:.4f}s")
+#print("original_tensor.cuda().eq(decompressed_tensor).all(): ", original_tensor.cuda().eq(decompressed_tensor).all())
 #print(result)
 #print(python_example.make_tensor()
