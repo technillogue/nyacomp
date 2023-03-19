@@ -206,9 +206,9 @@ def good_load(path: str) -> dict:
 
     #tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.gpt_batch_decompress_threadpool(fnames, shapes, dtypes)
-    if None in tensors:
-        import pdb
-        pdb.set_trace()
+    # if None in tensors:
+    #     import pdb
+    #     pdb.set_trace()
     #tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
 
@@ -226,10 +226,13 @@ try:
     print(guy)
 except IndexError:
     pass
+import timeit
 #compress_state_dict(str(guy))
 if __name__=="__main__":
     torch.cuda.synchronize()
-    with nyacomp.timer("good:"):    dd=good_load(guy)
+    res = timeit.timeit("good_load(guy)", number=4, globals=globals())
+    print(res/4)
+    #with nyacomp.timer("good:"):    dd=
         #dd=asyncio.run(lazy_load(guy))#, "_threaded")
     # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
     # with nyacomp.timer("cuda:"):
