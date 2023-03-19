@@ -204,30 +204,45 @@ def good_load(path: str) -> dict:
     shapes = [list(state_dict[k]["shape"]) for k in keys]
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
 
-    tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes)
+    #tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
+    tensors = _nyacomp.gpt_batch_decompress_threadpool(fnames, shapes, dtypes)
+    if None in tensors:
+        import pdb
+        pdb.set_trace()
     #tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
 
-diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
-diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
+def toggle_patch():
+    if diffusers.modeling_utils.load_state_dict == load_compressed_state_dict:
+        diffusers.modeling_utils.load_state_dict = diffusers.modeling_utils._load_state_dict
+    else:
+        diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
+        diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
+
+toggle_patch()
 import nyacomp
-guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/snapshots/*/*bin"))[0])
-print(guy)
+try:
+    guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/snapshots/*/*bin"))[0])
+    print(guy)
+except IndexError:
+    pass
 #compress_state_dict(str(guy))
 if __name__=="__main__":
     torch.cuda.synchronize()
-    #with nyacomp.timer("good:"):    dd=good_load(guy)
+    with nyacomp.timer("good:"):    dd=good_load(guy)
         #dd=asyncio.run(lazy_load(guy))#, "_threaded")
-    with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
-    with nyacomp.timer("cuda:"):
-        for v in dd_t.values():
-            v.cuda()
+    # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
+    # with nyacomp.timer("cuda:"):
+    #     for v in dd_t.values():
+    #         v.cuda()
 
-# with nyacomp.timer("load_compressed"):
-#     model = diffusers.StableDiffusionPipeline.from_pretrained(
-#         torch_dtype=torch.float16,
-#         revision="fp16",
-#         safety_checker=None,
-#         pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4",
-#         local_files_only=True,
-#     )
+    # with nyacomp.timer("load_compressed"):
+    #     model = diffusers.StableDiffusionPipeline.from_pretrained(
+    #         torch_dtype=torch.float16,
+    #         revision="fp16",
+    #         safety_checker=None,
+    #         pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4",
+    #         local_files_only=True,
+    #     )
+    # with nyacomp.timer("cuda"):
+    #     model.cuda()

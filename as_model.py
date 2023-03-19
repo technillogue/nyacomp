@@ -7,7 +7,9 @@ from typing import Iterator
 import numpy as np
 import pycuda.autoinit
 import torch
-import python_example as nvcomp
+import _nyacomp #as _nyacomp
+import cProfile
+
 
 @contextlib.contextmanager
 def timer(msg: str) -> Iterator[None]:
@@ -54,7 +56,7 @@ def compress(model: torch.nn.Module, name: str = "model.pth") -> float:
         data = tensor_bytes(param.data.detach().cpu())
         total_size += float(len(data))
         print(f"compressing parameter {i}")
-        total_compressed_size += nvcomp.compress(data, f"tensors/{i}.gz")
+        total_compressed_size += _nyacomp.compress(data, f"tensors/{i}.gz")
 
     meta = [{"shape": param.shape, "dtype": param.dtype} for param in parameters]
     pickle.dump(meta, open("tensors/metadata.pkl", "wb"))
@@ -76,12 +78,13 @@ def load_compressed(fname: str = "model.pth") -> torch.nn.Module:
         param.data = torch.empty(
             metadata[i]["shape"], dtype=metadata[i]["dtype"], device="cuda:0"
         )
-        param.data = nvcomp.decompress(f"tensors/{i}.gz", param.data)
+        #param.data =
+        _nyacomp.decompress(f"tensors/{i}.gz", param.data)
         print(param.data.shape)
         # assert param.data.abs().sum().item() != 0.0
     return model
 
-if False:
+if True:
     model = torch.load(
         "/home/sylv/dryad/sprkpnt/vqgan/predict/reaction_predictor_no_gauss.pth",
         map_location="cpu",
@@ -90,8 +93,10 @@ if False:
     ratio = compress(model)
     print(f"gdeflate compression ratio: {ratio:.4f}")
 
-with timer("loading with nvcomp"):
+with timer("loading with nyacomp"):
     new_model = load_compressed().eval()
+
+
 
 with timer("torch.load to cpu"):
     model = torch.load(
@@ -99,7 +104,9 @@ with timer("torch.load to cpu"):
         map_location="cpu",
     ).eval()
 with timer(".cuda()"):
-    model = model.cuda()
+    with cProfile.Profile() as pr:
+        model = model.cuda()
+        pr.dump_stats("/tmp/prof")
 
 # test_input = torch.zeros([768], device="cuda:0")
 # print("zeros:", new_model(test_input).eq(model(test_input)))
