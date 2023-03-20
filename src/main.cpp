@@ -80,6 +80,8 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string &filename)
     throw std::runtime_error("Failed to open file: " + filename);
 
   size_t file_size = static_cast<size_t>(file.tellg());
+  // allocate pinned cudaHost memory for the file?
+  // CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void **>(&file), file_size, cudaHostAllocDefault));
   std::vector<uint8_t> buffer(file_size);
 
   file.seekg(0, std::ios::beg);
@@ -155,7 +157,7 @@ torch::ScalarType type_for_name(std::string type_name)
 {
   if (type_name == "uint8")
   {
-    log("uint8 detected");
+    debug("uint8 detected");
     return torch::kUInt8;
   }
   else if (type_name == "int8")
@@ -170,7 +172,7 @@ torch::ScalarType type_for_name(std::string type_name)
     return torch::kFloat16;
   else if (type_name == "float32")
   {
-    log("float32 detected");
+    debug("float32 detected");
     return torch::kFloat32;
   }
   else if (type_name == "float64")
@@ -703,30 +705,43 @@ std::vector<torch::Tensor> gpt_batch_decompress_threadpool(
   std::vector<torch::Tensor> tensors(num_files);
   std::atomic<int> total_copy_time(0), total_decomp_time(0);
 
-  // std::vector<cudaStream_t> streams(num_threads); 
-  // // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#features-and-technical-specifications__technical-specifications-per-compute-capability
-  // // ampere: 128 concurrent kernels ... (3090, A30, etc are 8.6)
-  // // v100 is 7.0, but still 128
+  std::vector<cudaStream_t> streams(num_threads); 
+  // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#features-and-technical-specifications__technical-specifications-per-compute-capability
+  // ampere: 128 concurrent kernels ... (3090, A30, etc are 8.6)
+  // v100 is 7.0, but still 128
+  // initialize the primary context 
+  CUDA_CHECK(cudaSetDevice(0));
 
-  // for (auto &stream : streams) {
+
+  // auto create_stream_begin = std::chrono::steady_clock::now();
+  // for (auto &stream : streams) 
   //   CUDA_CHECK(cudaStreamCreate(&stream));
-  // }
-
+  // log("creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
+  
   std::vector<std::vector<int>> thread_to_indexes(num_threads);
   for (int i = 0; i < num_files; i++)
     thread_to_indexes[i % num_threads].push_back(i);
 
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
     auto indexes = thread_to_indexes[thread_id];
-    // futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &tensors, &filenames, &tensor_shapes, &dtypes]() {
-    futures.emplace_back(std::async(std::launch::async, [&, indexes]() {
-      std::string prefix = "thread " + std::to_string(thread_id) + ": ";
-      log(prefix + "started");
+    
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &filenames, &tensor_shapes, &dtypes]() {
+      log("started thread " + std::to_string(thread_id));
+      CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
+      
       int64_t thread_copy_time = 0, thread_decomp_time = 0;
-      cudaStream_t stream;
-      CUDA_CHECK(cudaStreamCreate(&stream));
+      auto create_stream_begin = std::chrono::steady_clock::now();
+      CUDA_CHECK(cudaStreamCreate(&streams[thread_id]));
+      log("creating stream took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
+      cudaStream_t stream = streams[thread_id];
 
-      for (int i : indexes) {
+      
+      // convert stream to int for logging
+      int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
+      // for (int i : indexes) {
+      for (auto job_number = 0; job_number < indexes.size(); job_number++) {
+        int i = indexes[job_number];
+        auto prefix = "thread " + std::to_string(thread_id) + ", tensor " + std::to_string(i) + "(job " + std::to_string(job_number) + "): ";
         auto file_start_time = std::chrono::steady_clock::now();
 
         std::vector<uint8_t> compressed_data;
@@ -734,55 +749,74 @@ std::vector<torch::Tensor> gpt_batch_decompress_threadpool(
         std::tie(compressed_data, input_buffer_len) = load_file(filenames[i]);
 
         uint8_t* comp_buffer;
+        log(prefix + "allocating device memory with stream " + std::to_string(stream_int));
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
 
         
         auto copy_begin = std::chrono::steady_clock::now();
+        log(prefix + "copying to device with stream " + std::to_string(stream_int));
         CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
 
         tensors[i] = make_tensor(tensor_shapes[i], dtypes[i]);
-        log("creating manager");
+        log(prefix + "creating manager with stream " + std::to_string(stream_int));
         // this syncs the stream
         auto decomp_nvcomp_manager = create_manager(comp_buffer, stream);
-        log("configuring decomp");
+        log(prefix + "configuring decomp");
         DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
         auto decomp_begin = std::chrono::steady_clock::now();
-        log("decompressing");
-        decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
-        std::chrono::microseconds decomp_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - decomp_begin);
-        // convert stream to int for logging
-        int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
+        log(prefix + "decompressing");
 
+        try {
+          decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
+        } catch (const std::exception& e) {
+          // check each of the resource handles to see if they're valid
+          log(prefix + "exception: " + std::string(e.what()));
+          // check cuda status
+          cudaError_t err = cudaGetLastError();
+          log(prefix + "cuda error: " + std::string(cudaGetErrorString(err)));
+          // check stream status
+          cudaError_t err2 = cudaStreamQuery(stream);
+          log(prefix + "cuda stream error: " + std::string(cudaGetErrorString(err2)));
+          log(prefix + "throwing exception");
+          throw e;
+        }
+        // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
+        std::chrono::microseconds decomp_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - decomp_begin);
+        
         log(prefix + "decompressed " + std::to_string(i) + " in " + std::to_string(decomp_time.count()) + "[µs], freeing with stream " + std::to_string(stream_int) + "");
         CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
 
         auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - file_start_time).count();
         // total_copy_time += copy_time.count();
         // total_decomp_time += decomp_time.count();
-        log("File " + std::to_string(i) + " processed in " + std::to_string(file_elapsed_time) + " ms"); 
+        log(prefix + "processed in " + std::to_string(file_elapsed_time) + " ms"); 
         thread_copy_time += copy_time.count();
         thread_decomp_time += decomp_time.count();
       }
-      auto sync_start = std::chrono::steady_clock::now();
-      CUDA_CHECK(cudaStreamSynchronize(stream));
-      CUDA_CHECK(cudaStreamDestroy(stream));
-      log(prefix + "sync time: " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - sync_start).count()) + "[µs]");
-
+      // auto sync_start = std::chrono::steady_clock::now();
+      // CUDA_CHECK(cudaStreamSynchronize(stream));
+      // CUDA_CHECK(cudaStreamDestroy(stream));
+      // log(prefix + "sync time: " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - sync_start).count()) + "[µs]");
       return std::make_pair(thread_copy_time, thread_decomp_time);
     }));
   }
+  log("waiting for futures");
 
-  for (auto &f : futures){
+  // for (auto &f : futures){
+  for (int i = 0; i < futures.size(); i++) {
     int copy, decomp;
-    std::tie(copy, decomp) = f.get();
+    log("waiting for future " + std::to_string(i));
+    std::tie(copy, decomp) = futures[i].get();
+    log("got future " + std::to_string(i));
     total_copy_time += copy;
     total_decomp_time += decomp;
   }
-  // for (auto &stream : streams) {
-  //   CUDA_CHECK(cudaStreamSynchronize(stream));
-  //   CUDA_CHECK(cudaStreamDestroy(stream));
-  // }
+  for (auto &stream : streams) 
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+  for (auto &stream : streams) 
+    CUDA_CHECK(cudaStreamDestroy(stream));
+  
 
   auto device_sync_start = std::chrono::steady_clock::now();
   CUDA_CHECK(cudaDeviceSynchronize());
