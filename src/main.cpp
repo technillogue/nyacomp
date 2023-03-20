@@ -665,13 +665,15 @@ std::vector<torch::Tensor> gpt_batch_decompress_threadpool(
   std::vector<torch::Tensor> tensors(num_files);
   std::atomic<int> total_copy_time(0), total_decomp_time(0);
 
-  std::vector<cudaStream_t> streams(num_threads); 
   // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#features-and-technical-specifications__technical-specifications-per-compute-capability
   // ampere: 128 concurrent kernels ... (3090, A30, etc are 8.6)
   // v100 is 7.0, but still 128
+  // std::vector<cudaStream_t> streams(num_threads); 
+  int streams_per_thread = 128 / num_threads; 
+  std::vector<std::vector<cudaStream_t>> streams = std::vector<std::vector<cudaStream_t>>(num_threads, std::vector<cudaStream_t>(streams_per_thread));
+  
   // initialize the primary context 
   CUDA_CHECK(cudaSetDevice(0));
-
 
   // auto create_stream_begin = std::chrono::steady_clock::now();
   // for (auto &stream : streams) 
@@ -682,27 +684,34 @@ std::vector<torch::Tensor> gpt_batch_decompress_threadpool(
   for (int i = 0; i < num_files; i++)
     thread_to_indexes[i % num_threads].push_back(i);
 
+
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
     auto indexes = thread_to_indexes[thread_id];
     
-    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &filenames, &tensor_shapes, &dtypes]() {
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &filenames, &tensor_shapes, &dtypes, &streams_per_thread]() {
       log("started thread " + std::to_string(thread_id));
       CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
       
       int64_t thread_copy_time = 0, thread_decomp_time = 0;
       auto create_stream_begin = std::chrono::steady_clock::now();
-      CUDA_CHECK(cudaStreamCreate(&streams[thread_id]));
-      log("creating stream took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
-      cudaStream_t stream = streams[thread_id];
+      for (int stream_id = 0; stream_id < streams_per_thread; stream_id++) {
+        CUDA_CHECK(cudaStreamCreate(&streams[thread_id][stream_id]));
+      }
+
+      log(std::to_string(thread_id) + ": creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
+      // cudaStream_t stream = streams[thread_id];
 
       
-      // convert stream to int for logging
-      int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
       // for (int i : indexes) {
       for (auto job_number = 0; job_number < indexes.size(); job_number++) {
         int i = indexes[job_number];
-        auto prefix = "thread " + std::to_string(thread_id) + ", tensor " + std::to_string(i) + "(job " + std::to_string(job_number) + "): ";
+        auto prefix = "thread " + std::to_string(thread_id) + ", tensor " + std::to_string(i) + " (job " + std::to_string(job_number) + "): ";
         auto file_start_time = std::chrono::steady_clock::now();
+
+        cudaStream_t stream = streams[thread_id][job_number % streams_per_thread];
+        // convert stream to int for logging
+        int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
+        
 
         std::vector<uint8_t> compressed_data;
         size_t input_buffer_len;
@@ -772,10 +781,12 @@ std::vector<torch::Tensor> gpt_batch_decompress_threadpool(
     total_copy_time += copy;
     total_decomp_time += decomp;
   }
-  for (auto &stream : streams) 
-    CUDA_CHECK(cudaStreamSynchronize(stream));
-  for (auto &stream : streams) 
-    CUDA_CHECK(cudaStreamDestroy(stream));
+  for (auto &thread_streams : streams) 
+    for (auto &stream : thread_streams)
+      CUDA_CHECK(cudaStreamSynchronize(stream));
+  for (auto &thread_streams : streams) 
+    for (auto &stream : thread_streams)
+      CUDA_CHECK(cudaStreamDestroy(stream));
   
 
   auto device_sync_start = std::chrono::steady_clock::now();

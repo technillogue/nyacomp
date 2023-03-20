@@ -145,22 +145,34 @@ def toggle_patch():
         diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
         diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
 
+
+
+def stats(times):
+    import statistics
+    stats = {
+        "mean": statistics.mean(times),
+        "stdev": statistics.stdev(times),
+        "min": min(times),
+    }
+    return " ".join(f"{k}: {round(v, 4)}" for k, v in stats.items())
+
 #toggle_patch()
-import nyacomp
+#import nyacomp
 try:
     guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/snapshots/*/*bin"))[0])
     #print(guy)
 except IndexError:
     pass
-import timeit
+#import timeit
 #compress_state_dict(str(guy))
 if __name__=="__main__":
     #torch.cuda.synchronize()
-    res = timeit.timeit("good_load(guy)", number=4, globals=globals())
-    print("good_load: ", res/4)
-    t_res = timeit.timeit("torch.load(guy, map_location='cuda:0')", number=4, globals=globals())
-    print("torch: ", t_res / 4)
-    #dd=good_load(guy)
+
+    # times = [timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)]
+    # print("good_load: ", stats(times))
+    # t_res = timeit.timeit("torch.load(guy, map_location='cuda:0')", number=2, globals=globals())
+    # print("torch: ", t_res / 2)
+    dd=good_load(guy)
     #with nyacomp.timer("good:"):    dd=good_load(guy)
         #dd=asyncio.run(lazy_load(guy))#, "_threaded")
     # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
