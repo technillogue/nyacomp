@@ -97,6 +97,23 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string &filename)
   return std::make_pair(buffer, file_size);
 }
 
+// std::pair<uint8_t*, size_t> load_file_pinned(const std::string &filename) {
+//   std::ifstream file(filename, std::ios::binary | std::ios::ate);
+//   if (!file.is_open())
+//     throw std::runtime_error("Failed to open file: " + filename);
+
+//   size_t file_size = static_cast<size_t>(file.tellg());
+//   uint8_t *buffer;
+//   CUDA_CHECK(cudaMallocHost(&buffer, file_size));
+
+//   file.seekg(0, std::ios::beg);
+//   if (!file.read(reinterpret_cast<char *>(buffer), file_size))
+//     throw std::runtime_error("Failed to read file: " + filename);
+//   debug("read " + std::to_string(file_size) + " bytes from " + filename);
+
+//   return std::make_pair(buffer, file_size);
+// }
+
 int compress(py::bytes pybytes, const std::string filename)
 {
   std::string bytes_str = pybytes;
@@ -461,16 +478,16 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
       
       int64_t thread_copy_time = 0, thread_decomp_time = 0;
       auto create_stream_begin = std::chrono::steady_clock::now();
-      for (int stream_id = 0; stream_id < streams_per_thread; stream_id++) {
+      for (int stream_id = 0; stream_id < streams_per_thread; stream_id++) 
         CUDA_CHECK(cudaStreamCreate(&streams[thread_id][stream_id]));
-      }
+      
 
       log(std::to_string(thread_id) + ": creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
       // cudaStream_t stream = streams[thread_id];
 
       
       // for (int i : indexes) {
-      for (auto job_number = 0; job_number < indexes.size(); job_number++) {
+      for (auto job_number = 0; job_number < (int)indexes.size(); job_number++) {
         int i = indexes[job_number];
         auto prefix = "thread " + std::to_string(thread_id) + ", tensor " + std::to_string(i) + " (job " + std::to_string(job_number) + "): ";
         auto file_start_time = std::chrono::steady_clock::now();
@@ -484,6 +501,10 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         size_t input_buffer_len;
         std::tie(compressed_data, input_buffer_len) = load_file(filenames[i]);
 
+        // uint8_t* host_compressed_data;
+        // size_t input_buffer_len;
+        // std::tie(host_compressed_data, input_buffer_len) = load_file_pinned(filenames[i]);
+
         uint8_t* comp_buffer;
         debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
@@ -491,8 +512,11 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
+        // CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
         CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
+
+        // CUDA_CHECK(cudaFreeHost(host_compressed_data));
 
         tensors[i] = make_tensor(tensor_shapes[i], dtypes[i]);
         debug(prefix + "creating manager with stream " + std::to_string(stream_int));
@@ -540,7 +564,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   log("waiting for futures");
 
   // for (auto &f : futures){
-  for (int i = 0; i < futures.size(); i++) {
+  for (int i = 0; i < (int)futures.size(); i++) {
     int copy, decomp;
     debug("waiting for future " + std::to_string(i));
     std::tie(copy, decomp) = futures[i].get();
@@ -592,6 +616,8 @@ PYBIND11_MODULE(_nyacomp, m)
 
   m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"));
 
+
+  // m.def("lowlevel_example", &lowlevel_example, "lowlevel_example", py::arg("data"), py::arg("length"));
 
 #ifdef VERSION_INFO
   m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);
