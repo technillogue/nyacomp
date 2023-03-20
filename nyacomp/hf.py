@@ -83,7 +83,7 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
                 (dir / f"{key}.gz").unlink()
             else:
                 total_compressed_size += new_size
-                state_dict[key] = {"shape": value.shape, "dtype": value.dtype}
+                state_dict[key] = {"shape": value.shape, "dtype": value.dtype, "len": len(data)}
                 # param.data = torch.tensor([], dtype=param.dtype)
         else:
             total_compressed_size += len(data)
@@ -130,7 +130,7 @@ def good_load(path: str) -> dict:
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
 
     #tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
-    tensors = _nyacomp.gpt_batch_decompress_threadpool(fnames, shapes, dtypes)
+    tensors = _nyacomp.batch_decompress_threadpool(fnames, shapes, dtypes)
     if None in tensors:
         import pdb
         pdb.set_trace()
@@ -139,11 +139,11 @@ def good_load(path: str) -> dict:
 
 def toggle_patch():
     import diffusers
-    if diffusers.modeling_utils.load_state_dict == load_compressed_state_dict:
+    if diffusers.modeling_utils.load_state_dict == good_load:
         diffusers.modeling_utils.load_state_dict = diffusers.modeling_utils._load_state_dict
     else:
         diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
-        diffusers.modeling_utils.load_state_dict = load_compressed_state_dict
+        diffusers.modeling_utils.load_state_dict = good_load
 
 
 
