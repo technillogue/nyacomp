@@ -428,6 +428,298 @@ std::vector<torch::Tensor> batch_decompress_async_new(const std::vector<std::str
 
 
 
+void compress_lowlevel(char* input_data, const size_t in_bytes, const std::string& filename)
+{
+  cudaStream_t stream;
+  cudaStreamCreate(&stream);
+
+  // First, initialize the data on the host.
+
+  // compute chunk sizes
+  size_t* host_uncompressed_bytes;
+  const size_t chunk_size = 65536;
+  const size_t batch_size = (in_bytes + chunk_size - 1) / chunk_size;
+
+  char* device_input_data;
+  cudaMalloc(&device_input_data, in_bytes);
+  cudaMemcpyAsync(device_input_data, input_data, in_bytes, cudaMemcpyHostToDevice, stream);
+
+  cudaMallocHost(&host_uncompressed_bytes, sizeof(size_t)*batch_size);
+  for (size_t i = 0; i < batch_size; ++i) {
+    if (i + 1 < batch_size) {
+      host_uncompressed_bytes[i] = chunk_size;
+    } else {
+      // last chunk may be smaller
+      host_uncompressed_bytes[i] = in_bytes - (chunk_size*i);
+    }
+  }
+
+  // Setup an array of pointers to the start of each chunk
+  void ** host_uncompressed_ptrs;
+  cudaMallocHost(&host_uncompressed_ptrs, sizeof(size_t)*batch_size);
+  for (size_t ix_chunk = 0; ix_chunk < batch_size; ++ix_chunk) {
+    host_uncompressed_ptrs[ix_chunk] = device_input_data + chunk_size*ix_chunk;
+  }
+
+  size_t* device_uncompressed_bytes;
+  void ** device_uncompressed_ptrs;
+  cudaMalloc(&device_uncompressed_bytes, sizeof(size_t) * batch_size);
+  cudaMalloc(&device_uncompressed_ptrs, sizeof(size_t) * batch_size);
+  
+  cudaMemcpyAsync(device_uncompressed_bytes, host_uncompressed_bytes, sizeof(size_t) * batch_size, cudaMemcpyHostToDevice, stream);
+  cudaMemcpyAsync(device_uncompressed_ptrs, host_uncompressed_ptrs, sizeof(size_t) * batch_size, cudaMemcpyHostToDevice, stream);
+
+  static const nvcompBatchedGdeflateOpts_t opts = {0};
+
+  // Then we need to allocate the temporary workspace and output space needed by the compressor.
+  size_t temp_bytes;
+  nvcompBatchedGdeflateCompressGetTempSize(batch_size, chunk_size, opts, &temp_bytes);
+  void* device_temp_ptr;
+  cudaMalloc(&device_temp_ptr, temp_bytes);
+
+  // get the maxmimum output size for each chunk
+  size_t max_out_bytes;
+  nvcompBatchedGdeflateCompressGetMaxOutputChunkSize(chunk_size, opts, &max_out_bytes);
+
+  // Next, allocate output space on the device
+  void ** host_compressed_ptrs;
+  cudaMallocHost(&host_compressed_ptrs, sizeof(size_t) * batch_size);
+  for(size_t ix_chunk = 0; ix_chunk < batch_size; ++ix_chunk) {
+      cudaMalloc(&host_compressed_ptrs[ix_chunk], max_out_bytes);
+  }
+
+  void** device_compressed_ptrs;
+  cudaMalloc(&device_compressed_ptrs, sizeof(size_t) * batch_size);
+  cudaMemcpyAsync(
+      device_compressed_ptrs, host_compressed_ptrs, 
+      sizeof(size_t) * batch_size,cudaMemcpyHostToDevice, stream);
+
+  // allocate space for compressed chunk sizes to be written to
+  size_t * device_compressed_bytes;
+  cudaMalloc(&device_compressed_bytes, sizeof(size_t) * batch_size);
+
+  // And finally, call the API to compress the data
+  nvcompStatus_t comp_res = nvcompBatchedGdeflateCompressAsync(
+      device_uncompressed_ptrs,
+      device_uncompressed_bytes,
+      chunk_size, // The maximum chunk size
+      batch_size,
+      device_temp_ptr,
+      temp_bytes,
+      device_compressed_ptrs,
+      device_compressed_bytes,
+      opts,
+      stream);
+  
+
+  if (comp_res != nvcompSuccess)
+  {
+    std::cerr << "Failed compression!" << std::endl;
+    assert(comp_res == nvcompSuccess);
+  }
+
+  // Save compressed data to file
+  std::ofstream out_file(filename, std::ios::binary);
+  if (!out_file.is_open()) {
+    std::cerr << "Failed to open output file!" << std::endl;
+    return;
+  }
+
+  for (size_t ix_chunk = 0; ix_chunk < batch_size; ++ix_chunk) {
+    char* compressed_data = new char[max_out_bytes];
+    cudaMemcpyAsync(compressed_data, host_compressed_ptrs[ix_chunk], max_out_bytes, cudaMemcpyDeviceToHost, stream);
+    cudaStreamSynchronize(stream);
+
+    // out_file.write(reinterpret_cast<const char*>(&max_out_bytes), sizeof(size_t));
+    out_file.write(compressed_data, max_out_bytes);
+    delete[] compressed_data;
+  }
+
+  out_file.close();
+
+}
+
+
+
+// void decompress_lowlevel(const std::string& filename, const size_t decompressed_size, const size_t batch_size)
+// {
+//   // Read compressed data from file
+//   std::ifstream in_file(filename, std::ios::binary);
+//   if (!in_file.is_open()) {
+//     std::cerr << "Failed to open input file!" << std::endl;
+//     return;
+//   }
+
+//   cudaStream_t stream;
+//   cudaStreamCreate(&stream);
+
+
+//   const size_t chunk_size = 65536;
+
+
+//   size_t* device_uncompressed_bytes;
+//   void ** device_uncompressed_ptrs;
+//   cudaMalloc(&device_uncompressed_bytes, sizeof(size_t) * batch_size);
+//   cudaMalloc(&device_uncompressed_ptrs, sizeof(size_t) * batch_size);
+
+//   void** device_compressed_ptrs;
+//   cudaMalloc(&device_compressed_ptrs, sizeof(size_t) * batch_size);
+
+  
+//   static const nvcompBatchedGdeflateOpts_t opts = {0};
+
+
+//   // ... (Initialize the necessary variables for decompression)
+
+//   for (size_t ix_chunk = 0; ix_chunk < chunk_size; ++ix_chunk) {
+//     in_file.read(reinterpret_cast<char*>(&max_out_bytes), sizeof(size_t));
+//     char* compressed_data = new char[max_out_bytes];
+//     in_file.read(compressed_data, max_out_bytes);
+
+//     cudaMemcpyAsync(host_compressed_ptrs[ix_chunk], compressed_data, max_out_bytes, cudaMemcpyHostToDevice, stream);
+//     delete[] compressed_data;
+//   }
+
+//   in_file.close();
+
+
+
+
+// ////
+//   // Decompression can be similarly performed on a batch of multiple compressed input chunks. 
+//   // As no metadata is stored with the compressed data, chunks can be re-arranged as well as decompressed 
+//   // with other chunks that originally were not compressed in the same batch.
+
+//   // If we didn't have the uncompressed sizes, we'd need to compute this information here. 
+//   // We demonstrate how to do this.
+//   nvcompBatchedGdeflateGetDecompressSizeAsync(
+//       device_compressed_ptrs,
+//       device_compressed_bytes,
+//       device_uncompressed_bytes,
+//       batch_size,
+//       stream);
+
+//   // Next, allocate the temporary buffer 
+//   size_t decomp_temp_bytes;
+//   nvcompBatchedGdeflateDecompressGetTempSize(batch_size, chunk_size, &decomp_temp_bytes);
+//   void * device_decomp_temp;
+//   cudaMalloc(&device_decomp_temp, decomp_temp_bytes);
+
+//   // allocate statuses
+//   nvcompStatus_t* device_statuses;
+//   cudaMalloc(&device_statuses, sizeof(nvcompStatus_t)*batch_size);
+
+//   // Also allocate an array to store the actual_uncompressed_bytes.
+//   // Note that we could use nullptr for this. We already have the 
+//   // actual sizes computed during the call to nvcompBatchedGdeflateGetDecompressSizeAsync.
+//   size_t* device_actual_uncompressed_bytes;
+//   cudaMalloc(&device_actual_uncompressed_bytes, sizeof(size_t)*batch_size);
+
+//   // And finally, call the decompression routine.
+//   // This decompresses each input, device_compressed_ptrs[i], and places the decompressed
+//   // result in the corresponding output list, device_uncompressed_ptrs[i]. It also writes
+//   // the size of the uncompressed data to device_uncompressed_bytes[i].
+//   nvcompStatus_t decomp_res = nvcompBatchedGdeflateDecompressAsync(
+//       device_compressed_ptrs, 
+//       device_compressed_bytes, 
+//       device_uncompressed_bytes, 
+//       device_actual_uncompressed_bytes, 
+//       batch_size,
+//       device_decomp_temp, 
+//       decomp_temp_bytes, 
+//       device_uncompressed_ptrs, 
+//       device_statuses, 
+//       stream);
+  
+//   if (decomp_res != nvcompSuccess)
+//   {
+//     std::cerr << "Failed compression!" << std::endl;
+//     assert(decomp_res == nvcompSuccess);
+//   }
+
+//   cudaStreamSynchronize(stream);
+// }
+
+
+// void decompress_file_lowlevel(
+// const std::string& input_filename,
+// const std::string& output_filename,
+// const size_t decompressed_size)
+// {
+// // Step 1: Read the compressed file into a buffer
+// std::ifstream input_file(input_filename, std::ios::binary);
+// if (!input_file.is_open()) {
+// throw std::runtime_error("Failed to open input file.");
+// }
+
+// input_file.seekg(0, std::ios::end);
+// size_t compressed_size = input_file.tellg();
+// input_file.seekg(0, std::ios::beg);
+
+// std::vector<char> compressed_data(compressed_size);
+// input_file.read(compressed_data.data(), compressed_size);
+// input_file.close();
+
+// // Step 2: Initialize CUDA stream
+// cudaStream_t stream;
+// cudaStreamCreate(&stream);
+
+// // Step 3: Allocate device memory for compressed data and copy it to the device
+// char* device_compressed_data;
+// cudaMalloc(&device_compressed_data, compressed_size);
+// cudaMemcpyAsync(device_compressed_data, compressed_data.data(), compressed_size, cudaMemcpyHostToDevice, stream);
+
+// // Step 4: Allocate device memory for decompressed data
+// char* device_decompressed_data;
+// cudaMalloc(&device_decompressed_data, decompressed_size);
+
+// // Step 5: Allocate temporary buffer for decompression
+// size_t temp_bytes;
+// nvcompBatchedGdeflateDecompressGetTempSize(&temp_bytes);
+// void* device_temp_buffer;
+// cudaMalloc(&device_temp_buffer, temp_bytes);
+
+// // Step 6: Perform decompression
+// size_t actual_decompressed_size;
+// nvcompStatus_t decomp_res = nvcompBatchedGdeflateDecompress(
+// device_compressed_data,
+// compressed_size,
+// device_decompressed_data,
+// decompressed_size,
+// device_temp_buffer,
+// temp_bytes,
+// &actual_decompressed_size,
+// stream);
+
+// if (decomp_res != nvcompSuccess) {
+// throw std::runtime_error("Failed decompression!");
+// }
+
+// // Step 7: Copy decompressed data back to the host
+// std::vector<char> decompressed_data(decompressed_size);
+// cudaMemcpyAsync(decompressed_data.data(), device_decompressed_data, decompressed_size, cudaMemcpyDeviceToHost, stream);
+
+// // Step 8: Synchronize the stream
+// cudaStreamSynchronize(stream);
+
+// // Step 9: Write the decompressed data to the output file
+// std::ofstream output_file(output_filename, std::ios::binary);
+// if (!output_file.is_open()) {
+// throw std::runtime_error("Failed to open output file.");
+// }
+
+// output_file.write(decompressed_data.data(), decompressed_size);
+// output_file.close();
+
+// // Step 10: Clean up device memory and stream
+// cudaFree(device_compressed_data);
+// cudaFree(device_decompressed_data);
+// cudaFree(device_temp_buffer);
+// cudaStreamDestroy(stream);
+// }
+
+
+
 std::vector<torch::Tensor> batch_decompress_threadpool(
     const std::vector<std::string> &filenames,
     const std::vector<std::vector<int64_t>> &tensor_shapes,
@@ -616,6 +908,7 @@ PYBIND11_MODULE(_nyacomp, m)
 
   m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"));
 
+  m.def("compress_lowlevel", &compress_lowlevel, "compress lowlevel", py::arg("data"), py::arg("length"), py::arg("filename"));
 
   // m.def("lowlevel_example", &lowlevel_example, "lowlevel_example", py::arg("data"), py::arg("length"));
 
