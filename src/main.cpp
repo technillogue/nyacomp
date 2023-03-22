@@ -716,18 +716,21 @@ void compress_lowlevel(char* input_data, const size_t in_bytes, const std::strin
 
 using ms_t = std::chrono::milliseconds;
 
+struct CompressedFile {
+  std::string filename;
+  std::vector<int64_t> tensor_shape;
+  std::string dtype;
+  size_t decompressed_size;
+};
 
-std::vector<torch::Tensor> batch_decompress_threadpool(
-    const std::vector<std::string> &filenames,
-    const std::vector<std::vector<int64_t>> &tensor_shapes,
-    const std::vector<std::string> &dtypes)
+std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<CompressedFile> &files)
 {
   auto start_time = std::chrono::steady_clock::now();
 
-  if (filenames.size() != tensor_shapes.size() || filenames.size() != dtypes.size() || filenames.size() == 0)
-    throw std::invalid_argument("All input vectors should have the same size and be non-empty.");
+  if (files.size() == 0)
+    throw std::invalid_argument("Input vector should be non-empty.");
 
-  int num_files = static_cast<int>(filenames.size());
+  int num_files = static_cast<int>(files.size());
   int num_threads = std::min(num_files, getenv("NUM_THREADS", static_cast<int>(std::thread::hardware_concurrency())));
 
 
@@ -763,19 +766,17 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
     auto indexes = thread_to_indexes[thread_id];
     
-    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &filenames, &tensor_shapes, &dtypes, &streams_per_thread]() {
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread]() {
       log("started thread " + std::to_string(thread_id));
       CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
       
       auto create_stream_begin = std::chrono::steady_clock::now();
       std::chrono::microseconds thread_copy_time, thread_decomp_time = std::chrono::milliseconds::zero();
-      // std::vector<GdeflateManager> managers(streams_per_thread); 
+
       std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>> managers(streams_per_thread);
-      for (int stream_id = 0; stream_id < streams_per_thread; stream_id++) {
+      for (int stream_id = 0; stream_id < streams_per_thread; stream_id++)
         CUDA_CHECK(cudaStreamCreate(&streams[thread_id][stream_id]));
-        // GdeflateManager manager {1 << 16, 1, streams[thread_id][stream_id]};
-        // managers[stream_id] = std::make_shared<GdeflateManager>(1 << 16, 0, streams[thread_id][stream_id]); // 1 << 16 is 64KB
-      }
+      
       log(std::to_string(thread_id) + ": creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
       // cudaStream_t stream = streams[thread_id];
       
@@ -791,7 +792,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
         std::vector<uint8_t> compressed_data;
         size_t input_buffer_len;
-        std::tie(compressed_data, input_buffer_len) = load_file(filenames[i]);
+        std::tie(compressed_data, input_buffer_len) = load_file(files[i].filename);
 
         // uint8_t* host_compressed_data;
         // size_t input_buffer_len;
@@ -809,7 +810,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
         // CUDA_CHECK(cudaFreeHost(host_compressed_data));
 
-        tensors[i] = make_tensor(tensor_shapes[i], dtypes[i]);
+        tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
         debug(prefix + "creating manager with stream " + std::to_string(stream_int));
         auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
         // check if manager was already created
@@ -926,7 +927,13 @@ void fake_batch_decompress_threadpool(){
     }
   }
   std::vector<std::string> dtypes(filenames.size(), "float32");  
-  batch_decompress_threadpool(filenames, shapes, dtypes);
+  std::vector<CompressedFile> files (filenames.size());
+  for (int i = 0; i < (int)filenames.size(); i++) {
+    files[i].filename = filenames[i];
+    files[i].tensor_shape = shapes[i];
+    files[i].dtype = "float32";
+  }
+  batch_decompress_threadpool(files);
 }
 }
 
@@ -935,15 +942,9 @@ PYBIND11_MODULE(_nyacomp, m)
 
   m.doc() = R"pbdoc(python bindings for nvcomp with torch)pbdoc";
 
-  m.def("compress", &compress, R"pbdoc(
-        compress
-    )pbdoc",
-        py::arg("data"), py::arg("filename"));
+  m.def("compress", &compress, R"pbdoc(compress)pbdoc", py::arg("data"), py::arg("filename"));
 
-  m.def("decompress", &decompress, R"pbdoc(
-        decompress
-    )pbdoc",
-        py::arg("filename"), py::arg("dest_tensor"));
+  m.def("decompress", &decompress, R"pbdoc(decompress)pbdoc", py::arg("filename"), py::arg("dest_tensor"));
 
   m.def("decompress_new_tensor", &decompress_new_tensor, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
@@ -951,11 +952,14 @@ PYBIND11_MODULE(_nyacomp, m)
   // m.def("decompress_batch_async", &batch_decompress_async, "async decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
   // m.def("decompress_batch_async_new", &batch_decompress_async_new, "decomp", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"));
 
-  m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"));
+  m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("files"));
 
   m.def("compress_lowlevel", &compress_lowlevel, "compress lowlevel", py::arg("data"), py::arg("length"), py::arg("filename"));
 
   // m.def("lowlevel_example", &lowlevel_example, "lowlevel_example", py::arg("data"), py::arg("length"));
+
+  py::class_<CompressedFile>(m, "CompressedFile")
+    .def(py::init<const std::string&, const std::vector<int64_t>&, const std::string&, const int64_t>());
 
 #ifdef VERSION_INFO
   m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);

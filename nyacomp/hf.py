@@ -139,96 +139,29 @@ def dry_load(path: str) -> dict:
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
     json.dump([fnames, shapes, dtypes], open("/tmp/shapes", "w"))
 
-
-# search partitioning space in advance to find optimal thread packing
-# we want tensors of the same size to be together while making sure each thread has similar amounts of work
-# we can do this by sorting the tensors by size and then assigning them to threads in order
-# when we can we also want to assign work to the thread with the least amount of work
-
-# find the bin packing with the shortest max bin size
-# then, find the bin packing with the highest number of repeated sizes with the same max bin size
-
-# if the the entire slowest thread is one tensor and cannot be packed differently,
-# all the other bins can use that to pack tensors of the same size
-
-
-def score(binning: list[list[int]]) -> tuple[int, int]:
-    longest = max(map(sum, binning))
-    changes = 0
-    for bin in binning:
-        for prev_size, next_size in zip(bin[:-1], bin[1:]):
-            if prev_size != next_size:
-                changes += 1
-    changes = sum(
-        1
-        for prev_size, next_size in zip(bin[:-1], bin[1:])
-        for bin in binning
-        if prev_size != next_size
-    )
-
-
-
-def partition(sizes: list[int], bins: int = 32) -> list[list[int]]:
-    indexes = [[] for _ in range(bins)]
-    bin_sizes = [0] * bins
-
-    lemgthy = max(sizes)
-
-    initial = sorted(enumerate(sizes), key=lambda x: x[1], reverse=True)
-    for i, size in initial:
-        smallest = bin_sizes.index(min(bin_sizes))
-        bin_sizes[smallest] += size
-        indexes[smallest].append(i)
-
-    while 1:
-        smallest, biggest = map(bin_sizes.index, (min(bin_sizes), max(bin_sizes)))
-        diff = bin_sizes[biggest] - bin_sizes[smallest]
-        _, index_to_move = max(
-            [(sizes[i], i) for i in indexes[biggest] if sizes[i] * 2 < diff],
-            default=(None, None),
-        )
-        if not index_to_move:
-            break
-        indexes[biggest].remove(index_to_move)
-        bin_sizes[biggest] -= sizes[index_to_move]
-        indexes[smallest].append(index_to_move)
-        bin_sizes[smallest] += sizes[index_to_move]
-
-    def indexes_to_sizes(indx: list[list[int]]) -> list[list[int]]:
-        return [[sizes[i] for i in bin] for bin in indx]
-
-    counts = [Counter([sizes[i] for i in bin]) for bin in indx]
-    size_bins = indexes_to_sizes(indexes)
-
-    for bin_number, bin in enumerate(bin_number, size_bins):
-        for i, item in enumerate(bin):
-            for replacement_bin in size_bins:
-                if replacement_bin[item] > bin[item]:
-                    pass # swap
-
-
-    return indexes
-
-
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
 
     keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
-    fnames = [f"{dir / key}.gz" for key in keys]
-    shapes = [list(state_dict[k]["shape"]) for k in keys]
-    dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
-    sizes = [state_dict[k]["len"] for k in keys]
+    files = [
+        _nyacomp.CompressedFile(
+            f"{dir / k}.gz",
+            list(state_dict[k]["shape"]),
+            str(state_dict[k]["dtype"]).removeprefix("torch."),
+            state_dict[k]["len"],
+        )
+        for k in keys
+    ]
 
     # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
-    tensors = _nyacomp.batch_decompress_threadpool(fnames, shapes, dtypes)
+    tensors = _nyacomp.batch_decompress_threadpool(files)
     if None in tensors:
         import pdb
 
         pdb.set_trace()
     # tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
-
 
 def toggle_patch():
     import diffusers
