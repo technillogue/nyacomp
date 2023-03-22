@@ -6,9 +6,11 @@ import os
 import pickle
 import time
 from typing import Iterator
-#import numpy as np
+
+# import numpy as np
 import concurrent
 from pathlib import Path
+
 # import pycuda.autoinit
 import torch
 import _nyacomp
@@ -25,6 +27,7 @@ def timer(msg: str) -> Iterator[None]:
 def tensor_bytes(tensor: "torch.Tensor") -> bytes:
     import torch
     import numpy as np
+
     length = int(np.prod(tensor.shape).item())
     bytes_per_item = torch._utils._element_size(tensor.dtype)
 
@@ -51,6 +54,7 @@ def compress_model(model: str | None = None) -> None:
         )
     compress_components(components)
 
+
 def compress_components(components: list[Path]) -> None:
     total_size, total_compressed_size = 0, 0
     for component in list(components):
@@ -64,6 +68,7 @@ def compress_components(components: list[Path]) -> None:
 
 def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
     import torch
+
     path = Path(_path)
     state_dict = torch.load(path)
 
@@ -83,7 +88,11 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
                 (dir / f"{key}.gz").unlink()
             else:
                 total_compressed_size += new_size
-                state_dict[key] = {"shape": value.shape, "dtype": value.dtype, "len": len(data)}
+                state_dict[key] = {
+                    "shape": value.shape,
+                    "dtype": value.dtype,
+                    "len": len(data),
+                }
                 # param.data = torch.tensor([], dtype=param.dtype)
         else:
             total_compressed_size += len(data)
@@ -113,7 +122,7 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
 #         #     _nyacomp.decompress_batch_async(fnames, tensors)
 #         # else:
 #         #     _nyacomp.decompress_batch(fnames, tensors)
-        
+
 #     state_dict = state_dict | {key: tensor for key, tensor in zip(keys, tensors)}
 #     # copy, decomp = map(sum, zip(*[future.result() for future in futures]))
 #     # print(f"total copy time: {copy/1000}ms, total decomp time: {decomp/1000}ms")
@@ -130,9 +139,40 @@ def dry_load(path: str) -> dict:
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
     json.dump([fnames, shapes, dtypes], open("/tmp/shapes", "w"))
 
-def partition(sizes: list[int], bins: int=32) -> list[list[int]]:
+
+# search partitioning space in advance to find optimal thread packing
+# we want tensors of the same size to be together while making sure each thread has similar amounts of work
+# we can do this by sorting the tensors by size and then assigning them to threads in order
+# when we can we also want to assign work to the thread with the least amount of work
+
+# find the bin packing with the shortest max bin size
+# then, find the bin packing with the highest number of repeated sizes with the same max bin size
+
+# if the the entire slowest thread is one tensor and cannot be packed differently,
+# all the other bins can use that to pack tensors of the same size
+
+
+def score(binning: list[list[int]]) -> tuple[int, int]:
+    longest = max(map(sum, binning))
+    changes = 0
+    for bin in binning:
+        for prev_size, next_size in zip(bin[:-1], bin[1:]):
+            if prev_size != next_size:
+                changes += 1
+    changes = sum(
+        1
+        for prev_size, next_size in zip(bin[:-1], bin[1:])
+        for bin in binning
+        if prev_size != next_size
+    )
+
+
+
+def partition(sizes: list[int], bins: int = 32) -> list[list[int]]:
     indexes = [[] for _ in range(bins)]
     bin_sizes = [0] * bins
+
+    lemgthy = max(sizes)
 
     initial = sorted(enumerate(sizes), key=lambda x: x[1], reverse=True)
     for i, size in initial:
@@ -154,7 +194,21 @@ def partition(sizes: list[int], bins: int=32) -> list[list[int]]:
         indexes[smallest].append(index_to_move)
         bin_sizes[smallest] += sizes[index_to_move]
 
+    def indexes_to_sizes(indx: list[list[int]]) -> list[list[int]]:
+        return [[sizes[i] for i in bin] for bin in indx]
+
+    counts = [Counter([sizes[i] for i in bin]) for bin in indx]
+    size_bins = indexes_to_sizes(indexes)
+
+    for bin_number, bin in enumerate(bin_number, size_bins):
+        for i, item in enumerate(bin):
+            for replacement_bin in size_bins:
+                if replacement_bin[item] > bin[item]:
+                    pass # swap
+
+
     return indexes
+
 
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
@@ -166,26 +220,33 @@ def good_load(path: str) -> dict:
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
     sizes = [state_dict[k]["len"] for k in keys]
 
-    #tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
+    # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress_threadpool(fnames, shapes, dtypes)
     if None in tensors:
         import pdb
+
         pdb.set_trace()
-    #tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
+    # tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
+
 
 def toggle_patch():
     import diffusers
-    if diffusers.modeling_utils.load_state_dict == good_load:
-        diffusers.modeling_utils.load_state_dict = diffusers.modeling_utils._load_state_dict
-    else:
-        diffusers.modeling_utils._load_state_dict = diffusers.modeling_utils.load_state_dict
-        diffusers.modeling_utils.load_state_dict = good_load
 
+    if diffusers.modeling_utils.load_state_dict == good_load:
+        diffusers.modeling_utils.load_state_dict = (
+            diffusers.modeling_utils._load_state_dict
+        )
+    else:
+        diffusers.modeling_utils._load_state_dict = (
+            diffusers.modeling_utils.load_state_dict
+        )
+        diffusers.modeling_utils.load_state_dict = good_load
 
 
 def stats(times):
     import statistics
+
     stats = {
         "mean": statistics.mean(times),
         "stdev": statistics.stdev(times),
@@ -193,25 +254,37 @@ def stats(times):
     }
     return " ".join(f"{k}: {round(v, 4)}" for k, v in stats.items())
 
-#toggle_patch()
-#import nyacomp
+
+# toggle_patch()
+# import nyacomp
 try:
-    guy = str(list(Path("~/.cache/huggingface/hub").expanduser().glob("models--o*/snapshots/*/*bin"))[0])
-    #print(guy)
+    guy = str(
+        list(
+            Path("~/.cache/huggingface/hub")
+            .expanduser()
+            .glob("models--o*/snapshots/*/*bin")
+        )[0]
+    )
+    # print(guy)
 except IndexError:
     pass
 import timeit
-#compress_state_dict(str(guy))
-if __name__=="__main__":
-    #torch.cuda.synchronize()
 
-    times = [timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)]
+# compress_state_dict(str(guy))
+if __name__ == "__main__":
+    # torch.cuda.synchronize()
+
+    times = [
+        timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)
+    ]
     print("good_load: ", stats(times))
-    t_res = timeit.timeit("torch.load(guy, map_location='cuda:0')", number=2, globals=globals())
+    t_res = timeit.timeit(
+        "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
+    )
     print("torch: ", t_res / 2)
-    #dd=good_load(guy)
-    #with nyacomp.timer("good:"):    dd=good_load(guy)
-        #dd=asyncio.run(lazy_load(guy))#, "_threaded")
+    # dd=good_load(guy)
+    # with nyacomp.timer("good:"):    dd=good_load(guy)
+    # dd=asyncio.run(lazy_load(guy))#, "_threaded")
     # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
     # with nyacomp.timer("cuda:"):
     #     for v in dd_t.values():
