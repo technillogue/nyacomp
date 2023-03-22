@@ -15,6 +15,15 @@ __version__ = "0.0.1"
 #   reproducible builds (https://github.com/pybind/python_example/pull/53)
 
 
+# class CustomBuildExtension(BuildExtension):
+#     def build_extension(self, ext):
+#         # Change the extension type to an executable
+#         ext.target_ext = ""
+
+#         # Call the superclass method to build the extension
+#         super().build_extension(ext)
+
+
 NVCOMP_INCLUDE_DIR = "/home/sylv/dryad/fast/py-nvcomp/_nvcomp/include"
 NVCOMP_LIB_NAME = "nvcomp"
 NVCOMP_LIB_DIR = "/home/sylv/dryad/fast/py-nvcomp/_nvcomp/lib"
@@ -40,6 +49,7 @@ ext_modules = [
             "nvcomp/lib",
             "/usr/local/cuda/lib64",
         ],
+        # extra_link_args=["-o./nya_exec"]
     ),
 ]
 

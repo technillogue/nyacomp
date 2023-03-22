@@ -120,6 +120,16 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
 #     return state_dict
 
 
+def dry_load(path: str) -> dict:
+    dir = Path(path).parent / "nya"
+    state_dict = torch.load(dir / f"boneless_{Path(path).name}")
+
+    keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
+    fnames = [f"{dir / key}.gz" for key in keys]
+    shapes = [list(state_dict[k]["shape"]) for k in keys]
+    dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
+    json.dump([fnames, shapes, dtypes], open("/tmp/shapes", "w"))
+
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
