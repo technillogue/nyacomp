@@ -130,6 +130,32 @@ def dry_load(path: str) -> dict:
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
     json.dump([fnames, shapes, dtypes], open("/tmp/shapes", "w"))
 
+def partition(sizes: list[int], bins: int=32) -> list[list[int]]:
+    indexes = [[] for _ in range(bins)]
+    bin_sizes = [0] * bins
+
+    initial = sorted(enumerate(sizes), key=lambda x: x[1], reverse=True)
+    for i, size in initial:
+        smallest = bin_sizes.index(min(bin_sizes))
+        bin_sizes[smallest] += size
+        indexes[smallest].append(i)
+
+    while 1:
+        smallest, biggest = map(bin_sizes.index, (min(bin_sizes), max(bin_sizes)))
+        diff = bin_sizes[biggest] - bin_sizes[smallest]
+        _, index_to_move = max(
+            [(sizes[i], i) for i in indexes[biggest] if sizes[i] * 2 < diff],
+            default=(None, None),
+        )
+        if not index_to_move:
+            break
+        indexes[biggest].remove(index_to_move)
+        bin_sizes[biggest] -= sizes[index_to_move]
+        indexes[smallest].append(index_to_move)
+        bin_sizes[smallest] += sizes[index_to_move]
+
+    return indexes
+
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
@@ -138,6 +164,7 @@ def good_load(path: str) -> dict:
     fnames = [f"{dir / key}.gz" for key in keys]
     shapes = [list(state_dict[k]["shape"]) for k in keys]
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
+    sizes = [state_dict[k]["len"] for k in keys]
 
     #tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress_threadpool(fnames, shapes, dtypes)

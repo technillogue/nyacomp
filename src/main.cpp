@@ -132,12 +132,15 @@ int compress(py::bytes pybytes, const std::string filename)
   CUDA_CHECK(cudaStreamCreate(&stream));
 
   const int chunk_size = 1 << 16;
-  nvcompType_t data_type = NVCOMP_TYPE_CHAR;
-  // nvcompBatchedGdeflateOpts_t opts = {1}; // :( :(
-
+  // nvcompType_t data_type = NVCOMP_TYPE_CHAR;
   // LZ4Manager nvcomp_manager{chunk_size, data_type, stream};
-  GdeflateManager nvcomp_manager{chunk_size, data_type, stream};
+
+  // 0 : high-throughput, low compression ratio (default) // only supported, lolsob
+  // 1 : low-throughput, high compression ratio
+  // 2 : highest-throughput, entropy-only compression (use for symmetric compression/decompression performance
   
+  GdeflateManager nvcomp_manager{1 << 16, 0, stream}; 
+
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);
   uint8_t *comp_buffer;
   CUDA_CHECK(cudaMalloc(&comp_buffer, comp_config.max_compressed_buffer_size));
@@ -712,7 +715,6 @@ void compress_lowlevel(char* input_data, const size_t in_bytes, const std::strin
 // }
 
 
-
 std::vector<torch::Tensor> batch_decompress_threadpool(
     const std::vector<std::string> &filenames,
     const std::vector<std::vector<int64_t>> &tensor_shapes,
@@ -764,13 +766,16 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
       
       int64_t thread_copy_time = 0, thread_decomp_time = 0;
       auto create_stream_begin = std::chrono::steady_clock::now();
-      for (int stream_id = 0; stream_id < streams_per_thread; stream_id++) 
-        CUDA_CHECK(cudaStreamCreate(&streams[thread_id][stream_id]));
-      std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>> managers(streams_per_thread); 
 
+      // std::vector<GdeflateManager> managers(streams_per_thread); 
+      std::vector<std::shared_ptr<GdeflateManager>> managers(streams_per_thread);
+      for (int stream_id = 0; stream_id < streams_per_thread; stream_id++) {
+        CUDA_CHECK(cudaStreamCreate(&streams[thread_id][stream_id]));
+        // GdeflateManager manager {1 << 16, 1, streams[thread_id][stream_id]};
+        managers[stream_id] = std::make_shared<GdeflateManager>(1 << 16, 0, streams[thread_id][stream_id]); // 1 << 16 is 64KB
+      }
       log(std::to_string(thread_id) + ": creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
       // cudaStream_t stream = streams[thread_id];
-
       
       // for (int i : indexes) {
       for (auto job_number = 0; job_number < (int)indexes.size(); job_number++) {
@@ -794,7 +799,6 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         uint8_t* comp_buffer;
         debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
-
         
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
@@ -806,14 +810,14 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
         tensors[i] = make_tensor(tensor_shapes[i], dtypes[i]);
         debug(prefix + "creating manager with stream " + std::to_string(stream_int));
-        std::shared_ptr<nvcomp::nvcompManagerBase> decomp_nvcomp_manager = managers[job_number % streams_per_thread];
+        auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
         // check if manager was already created
-        if (!decomp_nvcomp_manager) {
-          log("creating manager for stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
-          decomp_nvcomp_manager = create_manager(comp_buffer, stream);
-          managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
-        } else
-          log("reusing manager for stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
+        // if (!decomp_nvcomp_manager) {
+        //   log("creating manager for stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
+          // decomp_nvcomp_manager = create_manager(comp_buffer, stream);
+        //   managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
+        // } else
+        //   log("reusing manager for stream " + std ::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
         
         // this syncs the stream
         // std::shared_ptr<nvcomp::nvcompManagerBase> decomp_nvcomp_manager = create_manager(comp_buffer, stream);
@@ -851,10 +855,6 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         thread_decomp_time += decomp_time.count();
         // COZ_PROGRESS_NAMED("decompress");
       }
-      // auto sync_start = std::chrono::steady_clock::now();
-      // CUDA_CHECK(cudaStreamSynchronize(stream));
-      // CUDA_CHECK(cudaStreamDestroy(stream));
-      // log(prefix + "sync time: " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - sync_start).count()) + "[µs]");
       return std::make_pair(thread_copy_time, thread_decomp_time);
     }));
   }
@@ -884,8 +884,9 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   auto end_time = std::chrono::steady_clock::now();
   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
   log("Total processing time: " + std::to_string(elapsed_time) + " ms for " + std::to_string(num_files) + " tensors");
-  log("Total copy time: " + std::to_string(total_copy_time) + "[µs], total decomp time: " + std::to_string(total_decomp_time) + "[µs]");
-
+  log("Total copy time: " + std::to_string(total_copy_time / 1000) + "[ms], total decomp time: " + std::to_string(total_decomp_time / 1000) + "[ms]");
+  log("Average copy time per file: " + std::to_string(total_copy_time / 1000 / num_files) + "[ms], average decomp time per file: " + std::to_string(total_decomp_time / 1000 / num_files) + "[ms]");
+  
   return tensors;
 }
 
