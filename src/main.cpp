@@ -86,8 +86,6 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string &filename)
     throw std::runtime_error("Failed to open file: " + filename);
 
   size_t file_size = static_cast<size_t>(file.tellg());
-  // allocate pinned cudaHost memory for the file?
-  // CUDA_CHECK(cudaHostAlloc(reinterpret_cast<void **>(&file), file_size, cudaHostAllocDefault));
   std::vector<uint8_t> buffer(file_size);
 
   file.seekg(0, std::ios::beg);
@@ -97,6 +95,24 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string &filename)
 
   return std::make_pair(buffer, file_size);
 }
+
+
+std::pair<uint8_t*, size_t> load_file_wrapper(const std::string &filename ){
+  std::ifstream file(filename, std::ios::binary | std::ios::ate);
+  if (!file.is_open())
+    throw std::runtime_error("Failed to open file: " + filename);
+
+  size_t file_size = static_cast<size_t>(file.tellg());
+  uint8_t* buffer = new uint8_t[file_size];
+
+  file.seekg(0, std::ios::beg);
+  if (!file.read(reinterpret_cast<char *>(buffer), file_size))
+    throw std::runtime_error("Failed to read file: " + filename);
+  debug("read " + std::to_string(file_size) + " bytes from " + filename);
+
+  return std::make_pair(buffer, file_size);
+}
+
 size_t round_up_kb(size_t size) {return (size + 1023) & -1024;}
 
 int host_allocs = 0;
@@ -876,11 +892,9 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
       // cudaStream_t stream = streams[thread_id];
       
       
-      // if (PINNED) {
-        uint8_t* host_compressed_data = nullptr;
-        size_t input_buffer_len = 0;
-      // }
       
+      uint8_t* host_compressed_data = nullptr;
+      size_t input_buffer_len = 0;
 
       // for (int i : indexes) {
       for (auto job_number = 0; job_number < (int)indexes.size(); job_number++) {
@@ -893,14 +907,11 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
         total_decompressed_size += files[i].decompressed_size;
 
-        std::vector<uint8_t> compressed_data;
 
         if (PINNED)
           std::tie(host_compressed_data, input_buffer_len) = load_file_pinned(files[i].filename, host_compressed_data, input_buffer_len);
-        else {
-          size_t input_buffer_len;
-          std::tie(compressed_data, input_buffer_len) = load_file(files[i].filename);
-        }
+        else
+          std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
 
         uint8_t* comp_buffer;
         debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
@@ -908,10 +919,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
-        if (PINNED)
-          CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
-        else
-          CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
+        
+        CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
 
 
@@ -982,11 +991,13 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         thread_copy_time += copy_time;
         thread_decomp_time += decomp_time;
         // COZ_PROGRESS_NAMED("decompress");
+
+        if (!PINNED) delete[] host_compressed_data;
       }
       auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
 
-      float throughput = std::round((float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
+      int throughput = std::round((float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
       log("processed " + std::to_string(total_decompressed_size/1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s)"); 
       
       if (PINNED) CUDA_CHECK(cudaFreeHost(host_compressed_data));
@@ -1019,7 +1030,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
 
   auto end_time = std::chrono::steady_clock::now();
   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
-  log("Allocated " + std::to_string(host_allocs) + " host buffers in " + std::to_string(std::chrono::duration_cast<ms_t>(total_alloc_time).count()) + "[ms] " + std::to_string(std::chrono::duration_cast<ms_t>(total_alloc_time).count() / host_allocs) + "[ms/alloc]");
+  if (PINNED)
+    log("Allocated " + std::to_string(host_allocs) + " host buffers in " + std::to_string(std::chrono::duration_cast<ms_t>(total_alloc_time).count()) + "[ms] " + std::to_string(std::chrono::duration_cast<ms_t>(total_alloc_time).count() / host_allocs) + "[ms/alloc]");
   log("Total processing time: " + std::to_string(elapsed_time) + " ms for " + std::to_string(num_files) + " tensors on " + std::to_string(num_threads) + " threads, " + std::to_string(num_streams) + " streams");
   log("Total copy time: " + std::to_string(total_copy_time.count()) + "[ms], total decomp time: " + std::to_string(total_decomp_time.count()) + "[ms]");
   log("Average copy time per file: " + std::to_string((total_copy_time / num_files).count()) + "[ms], average decomp time per file: " + std::to_string((total_decomp_time / num_files).count()) + "[ms]");
