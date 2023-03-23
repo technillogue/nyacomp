@@ -809,6 +809,8 @@ private:
     }
 };
 
+bool PINNED = getenv("PINNED", 0);
+
 std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<CompressedFile> &files, const std::vector<std::vector<int>> &thread_to_idx)
 {
   auto start_time = std::chrono::steady_clock::now();
@@ -873,9 +875,13 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
       log(std::to_string(thread_id) + ": creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
       // cudaStream_t stream = streams[thread_id];
       
-      uint8_t* host_compressed_data = nullptr;
-      size_t input_buffer_len = 0;
       
+      // if (PINNED) {
+        uint8_t* host_compressed_data = nullptr;
+        size_t input_buffer_len = 0;
+      // }
+      
+
       // for (int i : indexes) {
       for (auto job_number = 0; job_number < (int)indexes.size(); job_number++) {
         int i = indexes[job_number];
@@ -887,11 +893,14 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
         total_decompressed_size += files[i].decompressed_size;
 
-        // size_t input_buffer_len;
-        // std::vector<uint8_t> compressed_data;
-        // std::tie(compressed_data, input_buffer_len) = load_file(files[i].filename);
+        std::vector<uint8_t> compressed_data;
 
-        std::tie(host_compressed_data, input_buffer_len) = load_file_pinned(files[i].filename, host_compressed_data, input_buffer_len);
+        if (PINNED)
+          std::tie(host_compressed_data, input_buffer_len) = load_file_pinned(files[i].filename, host_compressed_data, input_buffer_len);
+        else {
+          size_t input_buffer_len;
+          std::tie(compressed_data, input_buffer_len) = load_file(files[i].filename);
+        }
 
         uint8_t* comp_buffer;
         debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
@@ -899,11 +908,13 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
-        CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
-        // CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
+        if (PINNED)
+          CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
+        else
+          CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
 
-        // CUDA_CHECK(cudaFreeHost(host_compressed_data));
+
 
         debug(prefix + "creating manager with stream " + std::to_string(stream_int));
         auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
@@ -912,9 +923,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
           auto create_manager_begin = std::chrono::steady_clock::now();
           if (getenv("CREATE", 0)) {
             decomp_nvcomp_manager = create_manager(comp_buffer, stream);
-          } else {
+          } else 
             decomp_nvcomp_manager = std::make_shared<GdeflateManager>(1 << 16, 0, stream); // 1 << 16 is 64KB
-          }
           managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
           log("created manager in " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_manager_begin).count()) + "[µs] for stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
         } 
@@ -978,6 +988,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
 
       float throughput = std::round((float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
       log("processed " + std::to_string(total_decompressed_size/1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s)"); 
+      
+      if (PINNED) CUDA_CHECK(cudaFreeHost(host_compressed_data));
 
       return std::make_pair(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time));
     }));
