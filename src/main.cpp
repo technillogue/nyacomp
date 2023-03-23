@@ -723,7 +723,7 @@ struct CompressedFile {
   size_t decompressed_size;
 };
 
-std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<CompressedFile> &files)
+std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<CompressedFile> &files, const std::vector<std::vector<int>> &thread_to_idx)
 {
   auto start_time = std::chrono::steady_clock::now();
 
@@ -758,16 +758,16 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
   //   CUDA_CHECK(cudaStreamCreate(&stream));
   // log("creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
   
-  std::vector<std::vector<int>> thread_to_indexes(num_threads);
-  for (int i = 0; i < num_files; i++)
-    thread_to_indexes[i % num_threads].push_back(i);
+  // std::vector<std::vector<int>> thread_to_indexes(num_threads);
+  // for (int i = 0; i < num_files; i++) thread_to_indexes[i % num_threads].push_back(i);
 
 
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
-    auto indexes = thread_to_indexes[thread_id];
+    auto indexes = thread_to_idx[thread_id];
     
     futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread]() {
       log("started thread " + std::to_string(thread_id));
+      auto thread_start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
       
       auto create_stream_begin = std::chrono::steady_clock::now();
@@ -779,7 +779,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
       
       log(std::to_string(thread_id) + ": creating streams took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_stream_begin).count()) + "[µs]");
       // cudaStream_t stream = streams[thread_id];
-      
+      int64_t total_decompressed_size = 0;
       // for (int i : indexes) {
       for (auto job_number = 0; job_number < (int)indexes.size(); job_number++) {
         int i = indexes[job_number];
@@ -789,10 +789,12 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         cudaStream_t stream = streams[thread_id][job_number % streams_per_thread];
         // convert stream to int for logging
         int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
+        total_decompressed_size += files[i].decompressed_size;
 
         std::vector<uint8_t> compressed_data;
         size_t input_buffer_len;
         std::tie(compressed_data, input_buffer_len) = load_file(files[i].filename);
+        // files[i].decompressed_size
 
         // uint8_t* host_compressed_data;
         // size_t input_buffer_len;
@@ -871,6 +873,11 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         thread_decomp_time += decomp_time;
         // COZ_PROGRESS_NAMED("decompress");
       }
+      auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
+      auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
+      float throughput = (float)total_decompressed_size / (float)thread_elapsed_s.count() / 1024.0f / 1024.0f;
+      log("processed " + std::to_string(total_decompressed_size/1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s)"); 
+
       return std::make_pair(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time));
     }));
   }
@@ -933,7 +940,10 @@ void fake_batch_decompress_threadpool(){
     files[i].tensor_shape = shapes[i];
     files[i].dtype = "float32";
   }
-  batch_decompress_threadpool(files);
+  std::vector<std::vector<int>> thread_to_indexes(getenv("NUM_THREADS", 32));
+  for (size_t i = 0; i < filenames.size(); i++) thread_to_indexes[i % thread_to_indexes.size()].push_back(i);
+
+  batch_decompress_threadpool(files, thread_to_indexes);
 }
 }
 
@@ -952,7 +962,7 @@ PYBIND11_MODULE(_nyacomp, m)
   // m.def("decompress_batch_async", &batch_decompress_async, "async decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
   // m.def("decompress_batch_async_new", &batch_decompress_async_new, "decomp", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"));
 
-  m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("files"));
+  m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
 
   m.def("compress_lowlevel", &compress_lowlevel, "compress lowlevel", py::arg("data"), py::arg("length"), py::arg("filename"));
 

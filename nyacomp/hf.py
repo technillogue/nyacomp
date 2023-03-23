@@ -1,21 +1,18 @@
 import asyncio
-
 import contextlib
 import ctypes
 import os
-import pickle
 import time
+from pathlib import Path
 from typing import Iterator
 
-# import numpy as np
-import concurrent
-from pathlib import Path
-
+import _nyacomp
 # import pycuda.autoinit
 import torch
-import _nyacomp
-import diffusers
 
+#import diffusers
+#from nyacomp import partition
+import partition
 
 @contextlib.contextmanager
 def timer(msg: str) -> Iterator[None]:
@@ -139,11 +136,13 @@ def dry_load(path: str) -> dict:
     dtypes = [str(state_dict[k]["dtype"]).split(".")[1] for k in keys]
     json.dump([fnames, shapes, dtypes], open("/tmp/shapes", "w"))
 
+
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
 
     keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
+    keys.sort(key=lambda k:state_dict[k]["len"], reverse=True)
     files = [
         _nyacomp.CompressedFile(
             f"{dir / k}.gz",
@@ -153,9 +152,10 @@ def good_load(path: str) -> dict:
         )
         for k in keys
     ]
+    assignments = partition.massage(tuple(state_dict[k]["len"] for k in keys))
 
     # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
-    tensors = _nyacomp.batch_decompress_threadpool(files)
+    tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
     if None in tensors:
         import pdb
 
@@ -215,7 +215,7 @@ if __name__ == "__main__":
         "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
     )
     print("torch: ", t_res / 2)
-    # dd=good_load(guy)
+    # dd = good_load(guy)
     # with nyacomp.timer("good:"):    dd=good_load(guy)
     # dd=asyncio.run(lazy_load(guy))#, "_threaded")
     # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
