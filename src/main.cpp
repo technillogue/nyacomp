@@ -776,8 +776,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
       std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>> managers(streams_per_thread);
       int64_t total_decompressed_size = 0;
 
-      uint8_t* scratch_buffer = nullptr;
-      size_t scratch_buffer_size = 0;
+      // uint8_t* scratch_buffer = nullptr;
+      // size_t scratch_buffer_size = 0;
 
       auto create_stream_begin = std::chrono::steady_clock::now();
 
@@ -844,20 +844,20 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         auto decomp_begin = std::chrono::steady_clock::now();
         debug(prefix + "configuring decomp took " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(decomp_begin - config_begin).count()) + "[µs], decompressing");
 
-        auto new_size = decomp_nvcomp_manager.get()->get_required_scratch_buffer_size();
-        // cudaMemPoolCreate(), cudaMallocFromPoolAsync()
-        // auto scratch_buffer = std::make_unique<uint8_t[]>(size);
+        // auto new_size = decomp_nvcomp_manager.get()->get_required_scratch_buffer_size();
+        // // cudaMemPoolCreate(), cudaMallocFromPoolAsync()
+        // // auto scratch_buffer = std::make_unique<uint8_t[]>(size);
         
-        if (scratch_buffer == nullptr || scratch_buffer_size < new_size) {
-          if (scratch_buffer != nullptr) {
-            log(prefix + "freeing smaller scratch buffer of size " + std::to_string(scratch_buffer_size));
-            CUDA_CHECK(cudaFreeAsync(scratch_buffer, stream));
-          }
-          scratch_buffer_size = new_size;
-          log(prefix + "allocating new scratch buffer of size " + std::to_string(scratch_buffer_size) + " for decompressed size " + std::to_string(files[i].decompressed_size));
-          CUDA_CHECK(cudaMallocAsync(&scratch_buffer, scratch_buffer_size, stream));
-        }
-        decomp_nvcomp_manager->set_scratch_buffer(scratch_buffer);
+        // if (scratch_buffer == nullptr || scratch_buffer_size < new_size) {
+        //   if (scratch_buffer != nullptr) {
+        //     log(prefix + "freeing smaller scratch buffer of size " + std::to_string(scratch_buffer_size));
+        //     CUDA_CHECK(cudaFreeAsync(scratch_buffer, stream));
+        //   }
+        //   scratch_buffer_size = new_size;
+        //   log(prefix + "allocating new scratch buffer of size " + std::to_string(scratch_buffer_size) + " for decompressed size " + std::to_string(files[i].decompressed_size));
+        //   CUDA_CHECK(cudaMallocAsync(&scratch_buffer, scratch_buffer_size, stream));
+        // }
+        // decomp_nvcomp_manager->set_scratch_buffer(scratch_buffer);
         
         try {
           decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
@@ -888,11 +888,15 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
       }
       auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
-      float throughput = (float)total_decompressed_size / (float)thread_elapsed_s.count() / 1024.0f / 1024.0f;
+
+      float throughput = (float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f;
       log("processed " + std::to_string(total_decompressed_size/1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s)"); 
 
       return std::make_pair(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time));
     }));
+    // sleep to give the first threads thread a chance to start 
+    if (getenv("SLEEP", 0) == 1) 
+      std::this_thread::sleep_for(std::chrono::milliseconds(1)); //std::max(8 - thread_id, 0)));
   }
 
   // for (auto &f : futures){

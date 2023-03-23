@@ -152,7 +152,8 @@ def good_load(path: str) -> dict:
         )
         for k in keys
     ]
-    assignments = partition.massage(tuple(state_dict[k]["len"] for k in keys))
+    threads = int(os.getenv("NUM_THREADS", 32))
+    assignments = partition.massage(tuple(state_dict[k]["len"] for k in keys), threads)
 
     # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
@@ -205,7 +206,7 @@ import timeit
 
 # compress_state_dict(str(guy))
 if __name__ == "__main__":
-    # torch.cuda.synchronize()
+    torch.cuda.synchronize()
 
     times = [
         timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)
@@ -215,7 +216,7 @@ if __name__ == "__main__":
         "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
     )
     print("torch: ", t_res / 2)
-    # dd = good_load(guy)
+    #dd = good_load(guy)
     # with nyacomp.timer("good:"):    dd=good_load(guy)
     # dd=asyncio.run(lazy_load(guy))#, "_threaded")
     # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
