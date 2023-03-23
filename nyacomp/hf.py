@@ -89,10 +89,12 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
                     "shape": value.shape,
                     "dtype": value.dtype,
                     "len": len(data),
+                    "len_compressed": new_size,
                 }
                 # param.data = torch.tensor([], dtype=param.dtype)
         else:
             total_compressed_size += len(data)
+    #state_dict["meta"] = massage(
     print("overall tensor size: ", total_size)
     print("overall compression ratio:", total_compressed_size / float(total_size))
     torch.save(state_dict, dir / f"boneless_{path.name}")
@@ -152,8 +154,10 @@ def good_load(path: str) -> dict:
         )
         for k in keys
     ]
-    threads = int(os.getenv("NUM_THREADS", 32))
+    threads = int(os.getenv("NUM_THREADS", os.cpu_count()))
     assignments = partition.massage(tuple(state_dict[k]["len"] for k in keys), threads)
+    for bin in assignments:
+        bin.sort(key=lambda k:state_dict[keys[k]]["len_compressed"], reverse=True)
 
     # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
@@ -204,7 +208,7 @@ except IndexError:
     pass
 import timeit
 
-# compress_state_dict(str(guy))
+#compress_state_dict(str(guy))
 if __name__ == "__main__":
     torch.cuda.synchronize()
 
