@@ -159,6 +159,9 @@ def good_load(path: str) -> dict:
     for bin in assignments:
         bin.sort(key=lambda k:state_dict[keys[k]]["len_compressed"], reverse=True)
 
+    size = str(sum(state_dict[keys[bin[0]]]["len_compressed"] for bin in assignments))
+    os.environ["TOTAL_FILE_SIZE"] = size
+
     # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
     if None in tensors:
