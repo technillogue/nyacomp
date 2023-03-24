@@ -164,8 +164,16 @@ public:
     ~FileLoader() {
         CUDA_CHECK(cudaFreeHost(shared_buffer));
     }
-    // several buffers of the same size(s)
-    
+
+    uint8_t* get_buffer(size_t size, size_t thread_id) {
+      if (shared_buffer == nullptr) {
+        size_t offset = global_offset.fetch_add(size);
+        if (offset + size > total_size)
+            throw std::runtime_error("Shared buffer is not large enough to accommodate the file.");
+        thread_offsets[thread_id] = offset;
+      }
+      return shared_buffer + thread_offsets[thread_id];
+    }
 
     std::pair<uint8_t*, size_t> load_file_pinned(const std::string &filename, size_t thread_id) {
         if (shared_buffer == nullptr) {
@@ -525,6 +533,15 @@ struct CompressedFile {
 };
 
 
+size_t get_fsize(std::string filename)
+{
+  struct stat st;
+  if (stat(filename.c_str(), &st) != 0)
+    return (long)0;
+  return st.st_size;
+}
+
+
 bool PINNED = getenv("PINNED", 0);
 
 std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<CompressedFile> &files, const std::vector<std::vector<int>> &thread_to_idx)
@@ -596,23 +613,35 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         int stream_int = static_cast<int>(reinterpret_cast<intptr_t>(stream));
         total_decompressed_size += files[i].decompressed_size;
         
-        uint8_t* comp_buffer;
-        debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
-        
-        // if (PINNED)
-        //   std::tie(host_compressed_data, input_buffer_len) = load_file_pinned(files[i].filename, host_compressed_data, input_buffer_len);
-        // else
-        //   std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
+        bool pinned = job_number < 2 && thread_id > 8 && i != 0;
+
         uint8_t* host_compressed_data;
         size_t input_buffer_len;
-        if (job_number < 2 && thread_id > 8 && i != 0) 
-          std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
-        else 
-          std::tie(host_compressed_data, input_buffer_len) = file_loader.load_file_pinned(files[i].filename, thread_id);
+        std::ifstream file;
 
+        if (pinned){
+          file = std::ifstream(files[i].filename, std::ios::binary | std::ios::ate);
+          input_buffer_len = static_cast<size_t>(file.tellg());
+          file.seekg(0, std::ios::beg);
+        } else {
+          input_buffer_len = get_fsize(files[i].filename);
+        }
+  
+        uint8_t* comp_buffer;
+        debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
+        CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
+
+        if (pinned) 
+          std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
+        else {
+          host_compressed_data = file_loader.get_buffer(input_buffer_len, thread_id);
+          if (file.read(reinterpret_cast<char*>(host_compressed_data), input_buffer_len))
+            throw std::runtime_error("Could not read file " + files[i].filename + " (size " + std::to_string(input_buffer_len) + ")");
+          // std::tie(host_compressed_data, input_buffer_len) = file_loader.load_file_pinned(files[i].filename, thread_id);
+        }
+          
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
-        CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
 
         CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
