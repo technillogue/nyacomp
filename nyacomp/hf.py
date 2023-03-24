@@ -214,7 +214,10 @@ import timeit
 #compress_state_dict(str(guy))
 if __name__ == "__main__":
     torch.cuda.synchronize()
-
+    if os.getenv("PROF"):
+        import sys
+        dd = good_load(guy)
+        sys.exit(0)
     times = [
         timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)
     ]
@@ -223,7 +226,7 @@ if __name__ == "__main__":
         "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
     )
     print("torch: ", t_res / 2)
-    #dd = good_load(guy)
+    
     # with nyacomp.timer("good:"):    dd=good_load(guy)
     # dd=asyncio.run(lazy_load(guy))#, "_threaded")
     # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")

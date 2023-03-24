@@ -22,13 +22,11 @@ def ffd_binpack(sizes: list[int], capacity: int) -> list[list[int]]:
             i for i, size in enumerate(bin_sizes) if size + number <= capacity
         )
         if insert := next(possible_inserts, None):
-            print(f"inserting into existing bin {insert}")
             bins[insert].append(number)
             bin_sizes[insert] += number
         else:
             bins.append([number])
             bin_sizes.append(number)
-    print(f"packed {len(bins)} for capacity {capacity / 1024} kb")
     return bins
 
 
@@ -45,7 +43,7 @@ def multiway_partition(sizes: list[int], bins: int = 32, k=20) -> list[list[int]
         if upper_bound_capcity - lower_bound_capcity < 10:
             break
     solution = ffd_binpack(sizes, upper_bound_capcity)
-    assert len(solution) == 32
+    # assert len(solution) == 32
     return solution
 
 
@@ -103,7 +101,12 @@ def score(binning: list[list[int]]) -> tuple[int, int]:
         for bin in binning
         if prev_size != next_size
     )
+    return (longest, changes)
 
+
+# minimize the sum of the largest size in each bin
+# that is, few bins with the biggest sizes
+# instead of changes 
 
 def greedy_partition(sizes: list[int], n_bins: int = 32) -> list[list[int]]:
     bins = [[] for _ in range(n_bins)]
@@ -113,12 +116,28 @@ def greedy_partition(sizes: list[int], n_bins: int = 32) -> list[list[int]]:
         current_makespan = max(bin_sizes)
         candidates = []
         for i, bin in enumerate(bins):
+            # of threads that are bigger max size than this, take the least full one
+            # otherwise take the one this increases the least
+            # 
             new_size = bin_sizes[i] + number
             makespan_increase = max(0, new_size - current_makespan)
-            candidates.append((makespan_increase, number in bin, i))
-        _, _, i = min(candidates)
+            candidates.append((makespan_increase, max(number - max(bin, default=0), 0), bin_sizes[i], i))
+        i = min(candidates)[-1]
         bins[i].append(number)
         bin_sizes[i] += number
+
+    # move the smallest tensor from the largest thread with multiple tensors into any empty threads
+    while any(not b for b in bins):
+        biggest = sorted([bin for bin in bins if len(bin) > 2], key=sum)[-1]
+        empty = next(i for i, bin in enumerate(bins) if not bin)
+        moved = min(biggest)
+        biggest.remove(moved)
+        bins[empty].append(moved)
+        # for bin in bins:
+        #     for item in bin:
+        #         if item < moved and sum(bin) + item < max_len:
+        #             bin.remove(item)
+        #             empty.append
 
     return bins
 
