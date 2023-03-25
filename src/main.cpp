@@ -112,25 +112,33 @@ std::string pprint_throughput(size_t bytes, std::chrono::duration<int64_t, std::
 class FileLoader {
 public:
   FileLoader(size_t total_size, size_t num_threads)
-    : shared_buffer(nullptr), thread_offsets(num_threads, 0), global_offset(0) {
+    : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0), is_ready(false) {
     // launch a single thread to allocate the buffer
     alloc_future = std::async(std::launch::async, [this, total_size]() {
       auto start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
       log("allocated shared " + std::to_string(total_size / 1024 / 1024) + " MB in " + pprint(std::chrono::steady_clock::now() - start));
+      is_ready.store(true, std::memory_order_release);
       });
   }
 
-  ~FileLoader() { CUDA_CHECK(cudaFreeHost(shared_buffer)); }
+  ~FileLoader() { 
+    log("freeing shared buffer");
+    CUDA_CHECK(cudaFreeHost(shared_buffer));
+   }
 
   uint8_t* get_buffer(size_t size, size_t thread_id) {
     if (shared_buffer == nullptr)
       alloc_future.wait();
     if (thread_offsets[thread_id] == 0) {
-      size_t offset = global_offset.fetch_add(size);
+      size_t offset = global_offset.fetch_add(size, std::memory_order_relaxed);
       if (offset + size > total_size)
         throw std::runtime_error("Shared buffer is not large enough to accommodate the request.");
       thread_offsets[thread_id] = offset;
+      thread_sizes[thread_id] = size;
+    } else {
+      if (size > thread_sizes[thread_id])
+        throw std::runtime_error("Requested size " + pprint(size) + " is larger than than " + pprint(thread_sizes[thread_id]) + " previously allocated for thread " + std::to_string(thread_id));
     }
     return shared_buffer + thread_offsets[thread_id];
   }
@@ -159,9 +167,11 @@ public:
 private:
   uint8_t* shared_buffer;
   std::vector<size_t> thread_offsets;
+  std::vector<size_t> thread_sizes;
   std::atomic<size_t> global_offset;
   size_t total_size;
   std::future<void> alloc_future;
+  std::atomic<bool> is_ready;
 };
 
 int compress(py::bytes pybytes, const std::string filename) {
@@ -458,13 +468,14 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
   size_t total_file_size = getenv("TOTAL_FILE_SIZE", 0);
   assert(total_file_size > 0);
-  FileLoader file_loader(total_file_size, num_threads);
+  // initialize as a pointer to avoid later implicit destruction
+  FileLoader* file_loader = new FileLoader(total_file_size, num_threads);
 
 
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
     auto indexes = thread_to_idx[thread_id];
 
-    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &file_loader]() {
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, file_loader]() {
       log("started thread " + std::to_string(thread_id));
       auto thread_start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
@@ -508,7 +519,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
 
         size_t chunk_size = 1 << 20;
-        host_compressed_data = file_loader.get_buffer(input_buffer_len, thread_id);
+        host_compressed_data = file_loader->get_buffer(input_buffer_len, thread_id);
 
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
@@ -626,6 +637,9 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
       CUDA_CHECK(cudaStreamDestroy(stream));
   CUDA_CHECK(cudaDeviceSynchronize());
   log("Sync time: " + pprint(std::chrono::steady_clock::now() - sync_start));
+
+  // file_loader->~FileLoader();
+  delete file_loader;
 
   auto end_time = std::chrono::steady_clock::now();
   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
