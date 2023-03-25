@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import Iterator
 
 import _nyacomp
+
 # import pycuda.autoinit
 import torch
 
-#import diffusers
-#from nyacomp import partition
+# import diffusers
+# from nyacomp import partition
 import partition
+
 
 @contextlib.contextmanager
 def timer(msg: str) -> Iterator[None]:
@@ -74,6 +76,7 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
+    sizes = {}
     for key, value in state_dict.items():
         data = tensor_bytes(value.detach().cpu())  # gah
         total_size += len(data)
@@ -91,10 +94,19 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
                     "len": len(data),
                     "len_compressed": new_size,
                 }
+                sizes[key] = new_size
                 # param.data = torch.tensor([], dtype=param.dtype)
         else:
             total_compressed_size += len(data)
-    #state_dict["meta"] = massage(
+
+    sizes = list(sizes.items())
+    solution = [
+     [sizes[i][0] for i in bin]
+     for bin in partition.massage([size[1] for size in sizes])
+    ]
+    state_dict["meta"] = solution
+
+    # state_dict["meta"] = massage(
     print("overall tensor size: ", total_size)
     print("overall compression ratio:", total_compressed_size / float(total_size))
     torch.save(state_dict, dir / f"boneless_{path.name}")
@@ -142,9 +154,10 @@ def dry_load(path: str) -> dict:
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
+    assignments = state_dict.pop("meta")
 
     keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
-    keys.sort(key=lambda k:state_dict[k]["len"], reverse=True)
+    keys.sort(key=lambda k: state_dict[k]["len"], reverse=True)
     files = [
         _nyacomp.CompressedFile(
             f"{dir / k}.gz",
@@ -155,9 +168,10 @@ def good_load(path: str) -> dict:
         for k in keys
     ]
     threads = int(os.getenv("NUM_THREADS", os.cpu_count()))
-    assignments = partition.massage(tuple(state_dict[k]["len"] for k in keys), threads)
+    if len(assignments) != threads:
+        assignments = partition.massage(tuple(state_dict[k]["len"] for k in keys), threads)
     for bin in assignments:
-        bin.sort(key=lambda k:state_dict[keys[k]]["len_compressed"], reverse=True)
+        bin.sort(key=lambda k: state_dict[keys[k]]["len_compressed"], reverse=True)
 
     size = str(sum(state_dict[keys[bin[0]]]["len_compressed"] for bin in assignments))
     os.environ["TOTAL_FILE_SIZE"] = size
@@ -170,6 +184,7 @@ def good_load(path: str) -> dict:
         pdb.set_trace()
     # tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
+
 
 def toggle_patch():
     import diffusers
@@ -199,23 +214,32 @@ def stats(times):
 # toggle_patch()
 # import nyacomp
 try:
-    guy = str(
-        list(
+    if os.getenv("ENV", "") == "PROD":
+        glob = (
+            Path("~/.cache/huggingface/diffusers")
+            .expanduser()
+            .glob("models--*/snapshots/*/*bin")
+        )
+    else:
+        glob = (
             Path("~/.cache/huggingface/hub")
             .expanduser()
             .glob("models--o*/snapshots/*/*bin")
-        )[0]
-    )
+        )
+    guy = str(list(glob)[0])
     # print(guy)
 except IndexError:
     pass
 import timeit
 
-#compress_state_dict(str(guy))
+
+# compress_model()
+# compress_state_dict(str(guy))
 if __name__ == "__main__":
     torch.cuda.synchronize()
     if os.getenv("PROF"):
         import sys
+
         dd = good_load(guy)
         sys.exit(0)
     times = [
@@ -226,15 +250,15 @@ if __name__ == "__main__":
         "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
     )
     print("torch: ", t_res / 2)
-    
-    # with nyacomp.timer("good:"):    dd=good_load(guy)
+
+    # with timer("good:"):    dd=good_load(guy)
     # dd=asyncio.run(lazy_load(guy))#, "_threaded")
-    # with nyacomp.timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
-    # with nyacomp.timer("cuda:"):
+    # with timer("torch:"):        dd_t = torch.load(guy, map_location="cuda:0")
+    # with timer("cuda:"):
     #     for v in dd_t.values():
     #         v.cuda()
 
-    # with nyacomp.timer("load_compressed"):
+    # with timer("load_compressed"):
     #     model = diffusers.StableDiffusionPipeline.from_pretrained(
     #         torch_dtype=torch.float16,
     #         revision="fp16",
@@ -242,5 +266,5 @@ if __name__ == "__main__":
     #         pretrained_model_name_or_path="CompVis/stable-diffusion-v1-4",
     #         local_files_only=True,
     #     )
-    # with nyacomp.timer("cuda"):
+    # with timer("cuda"):
     #     model.cuda()
