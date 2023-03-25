@@ -12,7 +12,6 @@
 
 #include <chrono>
 #include <assert.h>
-#include <mutex>
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -36,27 +35,6 @@ namespace py = pybind11;
     }                                                                      \
   } while (false)
 
-class Timer
-{
-public:
-  explicit Timer(const std::string &msg) : m_msg(msg)
-  {
-    m_start = std::chrono::high_resolution_clock::now();
-  }
-
-  ~Timer()
-  {
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - m_start);
-    std::cout << m_msg << " took " << duration.count() / 1000.0 << "ms" << std::endl;
-  }
-
-private:
-  std::string m_msg;
-  std::chrono::high_resolution_clock::time_point m_start;
-};
-
-#define TIMER(msg) Timer timer_##__LINE__(msg);
 
 int getenv(const char *name, int default_value) {
   return std::getenv(name) ? std::stoi(std::getenv(name)) : default_value;
@@ -114,33 +92,6 @@ std::pair<uint8_t*, size_t> load_file_wrapper(const std::string &filename ){
 }
 
 size_t round_up_kb(size_t size) {return (size + 1023) & -1024;}
-
-int host_allocs = 0;
-auto total_alloc_time = std::chrono::microseconds(0);
-
-// filename, previous buffer, previous buffer size
-
-std::pair<uint8_t*, size_t> load_file_pinned(const std::string &filename, uint8_t *prev_buffer, size_t prev_size) {
-  std::ifstream file(filename, std::ios::binary | std::ios::ate);
-  if (!file.is_open())
-    throw std::runtime_error("Failed to open file: " + filename);
-  size_t file_size = static_cast<size_t>(file.tellg());
-  uint8_t *buffer;
-  if (prev_buffer != nullptr && file_size <= round_up_kb(prev_size) && round_up_kb(prev_size) <= file_size * 4) {
-    buffer = prev_buffer;
-  } else {
-    auto start = std::chrono::high_resolution_clock::now();
-    CUDA_CHECK(cudaFreeHost(prev_buffer));
-    CUDA_CHECK(cudaMallocHost(&buffer, round_up_kb(file_size)));
-    debug("allocated new host buffer in " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start).count()) + "us");
-    total_alloc_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - start);
-    host_allocs++;
-  }
-  file.seekg(0, std::ios::beg);
-  if (!file.read(reinterpret_cast<char *>(buffer), file_size))
-    throw std::runtime_error("Failed to read file: " + filename);
-  return std::make_pair(buffer, file_size);
-}
 
 std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
   if (duration < std::chrono::microseconds(1000))
@@ -304,12 +255,6 @@ torch::Tensor make_tensor(const std::vector<int64_t> &shape, const std::string &
   return torch::empty(shape, options);
 }
 
-// maybe just decompress from an arbitrary stream + length?
-// doing an r2 call with a library probably sucks
-// can you just get a fd?
-// or a python iterator...?
-// maybe you can go into python to grab an http library
-
 // cudaMemcpy 128kb ?
 // i5: L1 90K L2 2MB L3 24MB
 // 3090: L1 128kb L2 6MB
@@ -395,65 +340,6 @@ std::vector<std::pair<int, int>> batch_decompress(const std::vector<std::string>
   return times;
 }
 
-// void batch_decompress_async(const std::vector<std::string> filenames, const std::vector<torch::Tensor> tensors)
-// {
-//   std::vector<cudaStream_t> streams;
-//   int total_copy_time = 0;
-//   int total_decomp_time = 0;
-//   // compressed buffers on gpu
-//   std::vector<uint8_t *> comp_buffers;
-//   for (int i = 0; i < filenames.size(); i++)
-//   {
-//     std::vector<uint8_t> compressed_data;
-//     size_t input_buffer_len;
-//     std::tie(compressed_data, input_buffer_len) = load_file(filenames[i]);
-//     uint8_t *comp_buffer;
-
-//     cudaStream_t stream;
-//     CUDA_CHECK(cudaStreamCreate(&stream));
-//     log("created stream " + std::to_string(reinterpret_cast<intptr_t>(stream)));
-//     streams.push_back(stream);
-
-//     std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
-//     CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
-//     CUDA_CHECK(cudaMemcpyAsync(comp_buffer, compressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
-//     std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
-//     total_copy_time += copy_time.count();
-//     comp_buffers.push_back(comp_buffer);
-//   }
-//   log("launched all copies");
-//   for (int i = 0; i < comp_buffers.size(); i++)
-//   {
-//     auto decomp_nvcomp_manager = create_manager(comp_buffers[i], streams[i]);
-//     DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffers[i]);
-//     debug("decompressing into tensor exptected to have size " + std::to_string(decomp_config.decomp_data_size));
-
-//     std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
-
-//     decomp_nvcomp_manager->decompress(static_cast<uint8_t *>(tensors[i].data_ptr()), comp_buffers[i], decomp_config);
-//     std::chrono::microseconds decomp_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - begin);
-
-//     // log("copy time: " + std::to_string(copy_time.count()) + "[µs], decompression time: " + std::to_string(decomp_time.count()) + "[µs]");
-//     log("decompression time: " + std::to_string(decomp_time.count()) + "[µs]");
-//     CUDA_CHECK(cudaFreeAsync(comp_buffers[i], streams[i]));
-//     // total_copy_time += copy_time.count();
-//     total_decomp_time += decomp_time.count();
-//   }
-
-//   log("launched all decompress, waiting for streams to finish");
-
-//   std::chrono::steady_clock::time_point sync_begin = std::chrono::steady_clock::now();
-//   CUDA_CHECK(cudaDeviceSynchronize());
-//   std::chrono::microseconds sync_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - sync_begin);
-//   log("cudaDeviceSynchronize took" + std::to_string(sync_time.count()) + "[µs]");
-
-//   std::chrono::steady_clock::time_point destroy_begin = std::chrono::steady_clock::now();
-//   for (int i = 0; i < streams.size(); i++)
-//     CUDA_CHECK(cudaStreamDestroy(streams[i]));
-//   std::chrono::microseconds destroy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - destroy_begin);
-//   log("destroyed " + std::to_string(streams.size()) + " streams, took " + std::to_string(destroy_time.count()) + "[µs]");
-//   log("total copy time: " + std::to_string(total_copy_time) + "[µs], total decomp time: " + std::to_string(total_decomp_time) + "[µs]");
-// }
 
 std::vector<torch::Tensor> batch_decompress_async_new(const std::vector<std::string> &filenames, const std::vector<std::vector<int64_t>> &shapes, const std::vector<std::string> &dtypes)
 {
@@ -520,7 +406,6 @@ std::vector<torch::Tensor> batch_decompress_async_new(const std::vector<std::str
   log("total copy time: " + std::to_string(total_copy_time) + "[µs], total decomp time: " + std::to_string(total_decomp_time) + "[µs], overall time: " + std::to_string(total_time) + "[ms]");
   return tensors;
 }
-
 
 
 using ms_t = std::chrono::milliseconds;
@@ -637,7 +522,6 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
           host_compressed_data = file_loader.get_buffer(input_buffer_len, thread_id);
           if (file.read(reinterpret_cast<char*>(host_compressed_data), input_buffer_len))
             throw std::runtime_error("Could not read file " + files[i].filename + " (size " + std::to_string(input_buffer_len) + ")");
-          // std::tie(host_compressed_data, input_buffer_len) = file_loader.load_file_pinned(files[i].filename, thread_id);
         }
           
         auto copy_begin = std::chrono::steady_clock::now();
@@ -654,18 +538,13 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
         // check if manager was already created
         if (!decomp_nvcomp_manager) {
           auto create_manager_begin = std::chrono::steady_clock::now();
-          if (getenv("CREATE", 0)) {
-            decomp_nvcomp_manager = create_manager(comp_buffer, stream);
-          } else 
-            decomp_nvcomp_manager = std::make_shared<GdeflateManager>(1 << 16, 0, stream); // 1 << 16 is 64KB
+          decomp_nvcomp_manager = std::make_shared<GdeflateManager>(1 << 16, 0, stream); // 1 << 16 is 64KB
           managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
           log("created manager in " + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - create_manager_begin).count()) + "[µs] for stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
         }
         // cudaFreeAsync()
         
 
-        // std::shared_ptr<nvcomp::nvcompManagerBase> decomp_nvcomp_manager = create_manager(comp_buffer, stream);
-        // debug(prefix + "configuring decomp");
         auto config_begin = std::chrono::steady_clock::now();
         // nvcomp::PinnedPtrPool<nvcompStatus_t> status_ptr_pool;
         // DecompressionConfig cfg {status_ptr_pool}
@@ -676,8 +555,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
 
         // auto new_size = decomp_nvcomp_manager.get()->get_required_scratch_buffer_size();
         // // cudaMemPoolCreate(), cudaMallocFromPoolAsync()
-        // // auto scratch_buffer = std::make_unique<uint8_t[]>(size);
-        
+        // // auto scratch_buffer = std::make_unique<uint8_t[]>(size);        
         // if (scratch_buffer == nullptr || scratch_buffer_size < new_size) {
         //   if (scratch_buffer != nullptr) {
         //     log(prefix + "freeing smaller scratch buffer of size " + std::to_string(scratch_buffer_size));
@@ -729,7 +607,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<Compres
       return std::make_pair(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time));
     }));
     // sleep to give the first threads thread a chance to start 
-    std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3))); 
   }
 
   // for (auto &f : futures){
@@ -807,17 +685,10 @@ PYBIND11_MODULE(_nyacomp, m)
   m.def("compress", &compress, R"pbdoc(compress)pbdoc", py::arg("data"), py::arg("filename"));
 
   m.def("decompress", &decompress, R"pbdoc(decompress)pbdoc", py::arg("filename"), py::arg("dest_tensor"));
-
   m.def("decompress_new_tensor", &decompress_new_tensor, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
-
   m.def("decompress_batch", &batch_decompress, "decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
-  // m.def("decompress_batch_async", &batch_decompress_async, "async decompress batch", py::arg("filenames"), py::arg("dest_tensors"));
-  // m.def("decompress_batch_async_new", &batch_decompress_async_new, "decomp", py::arg("filenames"), py::arg("shapes"), py::arg("dtypes"));
 
   m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
-
-  // m.def("compress_lowlevel", &compress_lowlevel, "compress lowlevel", py::arg("data"), py::arg("length"), py::arg("filename"));
-  // m.def("lowlevel_example", &lowlevel_example, "lowlevel_example", py::arg("data"), py::arg("length"));
 
   py::class_<CompressedFile>(m, "CompressedFile")
     .def(py::init<const std::string&, const std::vector<int64_t>&, const std::string&, const size_t>());
