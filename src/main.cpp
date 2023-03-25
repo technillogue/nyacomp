@@ -24,8 +24,7 @@ using namespace nvcomp;
 namespace py = pybind11;
 
 #define CUDA_CHECK(cond)                                                   \
-  do                                                                       \
-  {                                                                        \
+  do {                                                                     \
     cudaError_t err = cond;                                                \
     if (err != cudaSuccess)                                                \
     {                                                                      \
@@ -45,20 +44,17 @@ int getenv(const char* name, int default_value) {
 const bool DEBUG = getenv("DEBUG", 0);
 const bool SILENT = getenv("SILENT", 0);
 
-void debug(const std::string& msg)
-{
+void debug(const std::string& msg) {
   if (DEBUG)
     std::cout << msg << std::endl;
 }
 
-void log(const std::string& msg)
-{
+void log(const std::string& msg) {
   if (!SILENT)
     std::cout << msg << std::endl;
 }
 
-std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename)
-{
+std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
   if (!file.is_open())
     throw std::runtime_error("Failed to open file: " + filename);
@@ -112,9 +108,7 @@ public:
       });
   }
 
-  ~FileLoader() {
-    CUDA_CHECK(cudaFreeHost(shared_buffer));
-  }
+  ~FileLoader() { CUDA_CHECK(cudaFreeHost(shared_buffer)); }
 
   uint8_t* get_buffer(size_t size, size_t thread_id) {
     if (shared_buffer == nullptr) {
@@ -157,8 +151,7 @@ private:
   std::future<void> alloc_future;
 };
 
-int compress(py::bytes pybytes, const std::string filename)
-{
+int compress(py::bytes pybytes, const std::string filename) {
   std::string bytes_str = pybytes;
   size_t input_buffer_len = bytes_str.size();
   std::vector<uint8_t> uncompressed_data(bytes_str.data(), bytes_str.data() + input_buffer_len);
@@ -167,8 +160,6 @@ int compress(py::bytes pybytes, const std::string filename)
   uint8_t* device_input_ptrs;
   CUDA_CHECK(cudaMalloc(&device_input_ptrs, input_buffer_len));
   CUDA_CHECK(cudaMemcpy(device_input_ptrs, uncompressed_data.data(), input_buffer_len, cudaMemcpyDefault));
-
-  // start compressing
 
   cudaStream_t stream;
   CUDA_CHECK(cudaStreamCreate(&stream));
@@ -186,8 +177,6 @@ int compress(py::bytes pybytes, const std::string filename)
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);
   uint8_t* comp_buffer;
   CUDA_CHECK(cudaMalloc(&comp_buffer, comp_config.max_compressed_buffer_size));
-
-  // check how long compression takes
 
   std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
@@ -221,10 +210,8 @@ int compress(py::bytes pybytes, const std::string filename)
   return comp_size;
 }
 
-torch::ScalarType type_for_name(std::string type_name)
-{
-  if (type_name == "uint8")
-  {
+torch::ScalarType type_for_name(std::string type_name) {
+  if (type_name == "uint8") {
     debug("uint8 detected");
     return torch::kUInt8;
   }
@@ -238,8 +225,7 @@ torch::ScalarType type_for_name(std::string type_name)
     return torch::kInt64;
   else if (type_name == "float16")
     return torch::kFloat16;
-  else if (type_name == "float32")
-  {
+  else if (type_name == "float32") {
     debug("float32 detected");
     return torch::kFloat32;
   }
@@ -249,8 +235,7 @@ torch::ScalarType type_for_name(std::string type_name)
     throw std::runtime_error("Unknown type name: " + type_name);
 }
 
-torch::Tensor make_tensor(const std::vector<int64_t>& shape, const std::string& dtype)
-{
+torch::Tensor make_tensor(const std::vector<int64_t>& shape, const std::string& dtype) {
   auto options = torch::TensorOptions().dtype(type_for_name(dtype)).device(torch::kCUDA);
   return torch::empty(shape, options);
 }
@@ -262,8 +247,7 @@ torch::Tensor make_tensor(const std::vector<int64_t>& shape, const std::string& 
 // and either 4kb, 128kb or 2-4MB
 // sd unet is 1.7 GB, vae 580MB, clip 235MB
 
-std::pair<int, int> decompress(const std::string filename, torch::Tensor tensor)
-{
+std::pair<int, int> decompress(const std::string filename, torch::Tensor tensor) {
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
   std::tie(compressed_data, input_buffer_len) = load_file(filename);
@@ -294,8 +278,7 @@ std::pair<int, int> decompress(const std::string filename, torch::Tensor tensor)
   return std::make_pair(copy_time.count(), decomp_time.count());
 }
 
-torch::Tensor decompress_new_tensor(const std::string filename, std::vector<int64_t> shape, std::string dtype)
-{
+torch::Tensor decompress_new_tensor(const std::string filename, std::vector<int64_t> shape, std::string dtype) {
 
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
@@ -332,8 +315,7 @@ torch::Tensor decompress_new_tensor(const std::string filename, std::vector<int6
 }
 
 // take a list of filenames and tensors and decompress them all
-std::vector<std::pair<int, int>> batch_decompress(const std::vector<std::string> filenames, const std::vector<torch::Tensor> tensors)
-{
+std::vector<std::pair<int, int>> batch_decompress(const std::vector<std::string> filenames, const std::vector<torch::Tensor> tensors) {
   std::vector<std::pair<int, int>> times;
   for (size_t i = 0; i < filenames.size(); i++)
     times.push_back(decompress(filenames[i], tensors[i]));
@@ -341,8 +323,7 @@ std::vector<std::pair<int, int>> batch_decompress(const std::vector<std::string>
 }
 
 
-std::vector<torch::Tensor> batch_decompress_async_new(const std::vector<std::string>& filenames, const std::vector<std::vector<int64_t>>& shapes, const std::vector<std::string>& dtypes)
-{
+std::vector<torch::Tensor> batch_decompress_async_new(const std::vector<std::string>& filenames, const std::vector<std::vector<int64_t>>& shapes, const std::vector<std::string>& dtypes) {
   std::chrono::steady_clock::time_point first_begin = std::chrono::steady_clock::now();
   std::vector<cudaStream_t> streams;
   int total_copy_time = 0;
@@ -428,8 +409,10 @@ size_t get_fsize(std::string filename) {
 
 bool PINNED = getenv("PINNED", 0);
 
-std::vector<torch::Tensor> batch_decompress_threadpool(const std::vector<CompressedFile>& files, const std::vector<std::vector<int>>& thread_to_idx)
-{
+std::vector<torch::Tensor> batch_decompress_threadpool(
+  const std::vector<CompressedFile>& files,
+  const std::vector<std::vector<int>>& thread_to_idx
+) {
   auto start_time = std::chrono::steady_clock::now();
 
   if (files.size() == 0)
@@ -678,8 +661,7 @@ extern "C" {
   }
 }
 
-PYBIND11_MODULE(_nyacomp, m)
-{
+PYBIND11_MODULE(_nyacomp, m) {
 
   m.doc() = R"pbdoc(python bindings for nvcomp with torch)pbdoc";
 
