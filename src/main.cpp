@@ -124,27 +124,27 @@ public:
   ~FileLoader() { CUDA_CHECK(cudaFreeHost(shared_buffer)); }
 
   uint8_t* get_buffer(size_t size, size_t thread_id) {
-    if (shared_buffer == nullptr) {
+    if (shared_buffer == nullptr)
+      alloc_future.wait();
+    if (thread_offsets[thread_id] == 0) {
       size_t offset = global_offset.fetch_add(size);
       if (offset + size > total_size)
-        throw std::runtime_error("Shared buffer is not large enough to accommodate the file.");
+        throw std::runtime_error("Shared buffer is not large enough to accommodate the request.");
       thread_offsets[thread_id] = offset;
     }
     return shared_buffer + thread_offsets[thread_id];
   }
 
   std::pair<uint8_t*, size_t> load_file_pinned(const std::string& filename, size_t thread_id) {
-    if (shared_buffer == nullptr) {
+    if (shared_buffer == nullptr)
       alloc_future.wait();
-    }
     std::ifstream file(filename, std::ios::binary | std::ios::ate);
     size_t file_size = static_cast<size_t>(file.tellg());
 
     if (thread_offsets[thread_id] == 0) {
       size_t offset = global_offset.fetch_add(file_size);
-      if (offset + file_size > total_size) {
+      if (offset + file_size > total_size)
         throw std::runtime_error("Shared buffer is not large enough to accommodate the file.");
-      }
       thread_offsets[thread_id] = offset;
     }
 
