@@ -249,10 +249,10 @@ if __name__ == "__main__":
         timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)
     ]
     print("good_load: ", stats(times))
-    t_res = timeit.timeit(
-        "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
-    )
-    print("torch: ", t_res / 2)
+    # t_res = timeit.timeit(
+    #     "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
+    # )
+    # print("torch: ", t_res / 2)
 
     # with timer("good:"):    dd=good_load(guy)
     # dd=asyncio.run(lazy_load(guy))#, "_threaded")

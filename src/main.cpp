@@ -130,11 +130,11 @@ public:
   uint8_t* get_buffer(size_t size, size_t thread_id) {
     if (shared_buffer == nullptr)
       alloc_future.wait();
-    if (thread_offsets[thread_id] == 0) {
+    if (thread_sizes[thread_id] == 0 && thread_offsets[thread_id] == 0) {
       size_t offset = global_offset.fetch_add(size, std::memory_order_relaxed);
       if (offset + size > total_size) {
         size_t remaining = total_size - offset;
-        throw std::runtime_error("Shared buffer is not large enough to accommodate the request." + pprint(size) + " bytes requested by thread " + std::to_string(thread_id) + ", " + pprint(remaining) + "  total bytes");
+        throw std::runtime_error("Shared buffer is not large enough to accommodate " + pprint(size) + " bytes requested by thread " + std::to_string(thread_id) + ", " + pprint(remaining) + "  total bytes");
       }
       thread_offsets[thread_id] = offset;
       thread_sizes[thread_id] = size;
@@ -516,9 +516,9 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         input_buffer_len = static_cast<size_t>(file.tellg());
         file.seekg(0, std::ios::beg);
 
-        uint8_t* comp_buffer;
         debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        // CUDA_CHECK(cudaStreamSynchronize(stream));
+        uint8_t* comp_buffer;
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
 
         size_t chunk_size = 1 << 20;
