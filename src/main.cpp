@@ -106,13 +106,13 @@ std::string pprint(size_t bytes) {
 }
 
 std::string pprint_throughput(size_t bytes, std::chrono::duration<int64_t, std::nano> duration) {
-  return pprint(bytes) + "/s";
+  return pprint(bytes  * 1e9 / std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()) + "/s";
 }
 
 class FileLoader {
 public:
   FileLoader(size_t total_size, size_t num_threads)
-    : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0), is_ready(false) {
+    : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0), total_size(total_size), is_ready(false) {
     // launch a single thread to allocate the buffer
     alloc_future = std::async(std::launch::async, [this, total_size]() {
       auto start = std::chrono::steady_clock::now();
@@ -132,8 +132,10 @@ public:
       alloc_future.wait();
     if (thread_offsets[thread_id] == 0) {
       size_t offset = global_offset.fetch_add(size, std::memory_order_relaxed);
-      if (offset + size > total_size)
-        throw std::runtime_error("Shared buffer is not large enough to accommodate the request.");
+      if (offset + size > total_size) {
+        size_t remaining = total_size - offset;
+        throw std::runtime_error("Shared buffer is not large enough to accommodate the request." + pprint(size) + " bytes requested by thread " + std::to_string(thread_id) + ", " + pprint(remaining) + "  total bytes");
+      }
       thread_offsets[thread_id] = offset;
       thread_sizes[thread_id] = size;
     } else {
@@ -259,7 +261,7 @@ torch::ScalarType type_for_name(std::string type_name) {
 }
 
 torch::Tensor make_tensor(const std::vector<int64_t>& shape, const std::string& dtype) {
-  auto options = torch::TensorOptions().dtype(type_for_name(dtype)).device(torch::kCUDA);
+  auto options = torch::TensorOptions().dtype(type_for_name(dtype)).device(torch::kCUDA).memory_format(torch::MemoryFormat::Contiguous);
   return torch::empty(shape, options);
 }
 
@@ -516,6 +518,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
         uint8_t* comp_buffer;
         debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
 
         size_t chunk_size = 1 << 20;
@@ -523,22 +526,20 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
-        size_t offset = 0;
+        size_t already_read = 0;
         int chunks = 0;
-        while (offset < input_buffer_len) {
-          size_t to_read = std::min(chunk_size, input_buffer_len - offset);
-          if (!file.read(reinterpret_cast<char*>(host_compressed_data + offset), to_read))
+        while (already_read < input_buffer_len) {
+          size_t to_read = std::min(chunk_size, input_buffer_len - already_read);
+          if (!file.read(reinterpret_cast<char*>(host_compressed_data + already_read), to_read))
             throw std::runtime_error("Could not read file " + files[i].filename + " (size " + std::to_string(input_buffer_len) + ")");
-          CUDA_CHECK(cudaMemcpyAsync(comp_buffer + offset, host_compressed_data + offset, to_read, cudaMemcpyDefault, stream));
-          offset += to_read;
+          CUDA_CHECK(cudaMemcpyAsync(comp_buffer + already_read, host_compressed_data + already_read, to_read, cudaMemcpyDefault, stream));
+          already_read += to_read;
           chunks++;
         }
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         log(prefix + "copied " + std::to_string(chunks) + " 1MB chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
         
-        tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
-
-
+        
         debug(prefix + "creating manager with stream " + std::to_string(stream_int));
         auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
         // check if manager was already created
@@ -572,9 +573,19 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         //   CUDA_CHECK(cudaMallocAsync(&scratch_buffer, scratch_buffer_size, stream));
         // }
         // decomp_nvcomp_manager->set_scratch_buffer(scratch_buffer);
+        tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
+
+        bool safe = tensors[i].is_contiguous();
+        if (!safe) {
+          std::cerr << "Tensor " << i << " is not contiguous!!! something bad has happened" << std::endl;
+          throw std::runtime_error("Tensor " + std::to_string(i) + " is not contiguous");
+        }
+        auto tens = tensors[i];
+        auto ptr = tens.data_ptr();
+        auto dest = static_cast<uint8_t*>(ptr);
 
         try {
-          decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
+          decomp_nvcomp_manager->decompress(dest, comp_buffer, decomp_config);
         }
         catch (const std::exception& e) {
           // check each of the resource handles to see if they're valid
@@ -588,12 +599,14 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
           log(prefix + "throwing exception");
           throw e;
         }
+        CUDA_CHECK(cudaStreamSynchronize(stream));
         // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
         ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
 
         log(prefix + "decompressed " + std::to_string(i) + " in " + pprint(decomp_time) + ", freeing with stream " + std::to_string(stream_int) + "");
         // need to not free comp_buffer until the decompression is complete, so we should 
         CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
+        CUDA_CHECK(cudaStreamSynchronize(stream));
 
         auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - file_start_time).count();
 

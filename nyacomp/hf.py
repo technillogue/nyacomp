@@ -242,6 +242,8 @@ if __name__ == "__main__":
         import sys
 
         dd = good_load(guy)
+        for k in list(dd):
+            del dd[k]
         sys.exit(0)
     times = [
         timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)
