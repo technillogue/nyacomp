@@ -13,6 +13,7 @@
 #include <chrono>
 #include <assert.h>
 #include <iostream>
+#include <sstream>
 #include <fstream>
 #include <vector>
 
@@ -96,13 +97,17 @@ std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
 }
 
 std::string pprint(size_t bytes) {
+  std::stringstream ss;
+  ss << std::fixed << std::setprecision(2);
   if (bytes < 1024)
-    return std::to_string(bytes) + " B";
-  if (bytes < 1024 * 1024)
-    return std::to_string(bytes / 1024) + " KB";
-  if (bytes < 1024 * 1024 * 1024)
-    return std::to_string(bytes / 1024 / 1024) + " MB";
-  return std::to_string(bytes / 1024 / 1024 / 1024) + " GB";
+    ss << bytes << " B";
+  else if (bytes < 1024 * 1024)
+    ss << static_cast<double>(bytes) / 1024 << " KB";
+  else if (bytes < 1024 * 1024 * 1024)
+    ss << static_cast<double>(bytes) / (1024 * 1024) << " MB";
+  else
+    ss << static_cast<double>(bytes) / (1024 * 1024 * 1024) << " GB";   
+  return ss.str();
 }
 
 std::string pprint_throughput(size_t bytes, std::chrono::duration<int64_t, std::nano> duration) {
@@ -117,14 +122,15 @@ public:
     alloc_future = std::async(std::launch::async, [this, total_size]() {
       auto start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
-      log("allocated shared " + std::to_string(total_size / 1024 / 1024) + " MB in " + pprint(std::chrono::steady_clock::now() - start));
+      log("allocated shared " + pprint(total_size) + " in " + pprint(std::chrono::steady_clock::now() - start));
       is_ready.store(true, std::memory_order_release);
       });
   }
 
   ~FileLoader() {
-    log("freeing shared buffer");
+    auto start = std::chrono::steady_clock::now();
     CUDA_CHECK(cudaFreeHost(shared_buffer));
+    log("freed "+ pprint(total_size) + " FileLoader buffer in " + pprint(std::chrono::steady_clock::now() - start));
   }
 
   uint8_t* get_buffer(size_t size, size_t thread_id) {
@@ -488,13 +494,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         catch (const std::exception& e) {
           // check each of the resource handles to see if they're valid
           log(prefix + "exception: " + std::string(e.what()));
-          // check cuda status
-          cudaError_t err = cudaGetLastError();
-          log(prefix + "cuda error: " + std::string(cudaGetErrorString(err)));
-          // check stream status
-          cudaError_t err2 = cudaStreamQuery(stream);
-          log(prefix + "cuda stream error: " + std::string(cudaGetErrorString(err2)));
-          log(prefix + "throwing exception");
+          log(prefix + "cuda error: " + std::string(cudaGetErrorString(cudaGetLastError())));
+          log(prefix + "cuda stream error: " + std::string(cudaGetErrorString(cudaStreamQuery(stream))));
           throw e;
         }
         
