@@ -1,20 +1,18 @@
-import asyncio
 import contextlib
 import ctypes
+import json
 import os
 import time
 from pathlib import Path
 from typing import Iterator
 
-import _nyacomp
-
-# import pycuda.autoinit
-import torch
-
 # import diffusers
 # from nyacomp import partition
 import partition
+# import pycuda.autoinit
+import torch
 
+import _nyacomp
 
 @contextlib.contextmanager
 def timer(msg: str) -> Iterator[None]:
@@ -210,7 +208,7 @@ def toggle_patch():
         diffusers.modeling_utils.load_state_dict = good_load
 
 
-def stats(times):
+def stats(times: list[int|float]) -> str:
     import statistics
 
     stats = {
@@ -254,10 +252,19 @@ if __name__ == "__main__":
         for k in list(dd):
             del dd[k]
         sys.exit(0)
+    os.environ["NAME"] = "run-" + str(int(time.time()))
     times = [
         timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)
     ]
-    print("good_load: ", stats(times))
+    runs = list(map(json.loads, open("/tmp/stats.json")))
+    print(os.environ["NAME"], " load_compressed: ", stats(times))
+    processing = [run["elapsed_time"] for run in runs]
+    print("inner processing: ", stats(processing))
+    copy_time = [run["total_copy_time"] for run in runs]
+    print("copy: ", stats(copy_time))
+    decomp_time = [run["total_decomp_time"] for run in runs]
+    print("decomp: ", stats(decomp_time))
+
     # t_res = timeit.timeit(
     #     "torch.load(guy, map_location='cuda:0')", number=2, globals=globals()
     # )

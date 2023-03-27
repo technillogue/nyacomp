@@ -307,7 +307,6 @@ torch::Tensor make_tensor(const std::vector<int64_t>& shape, const std::string& 
 // sd unet is 1.7 GB, vae 580MB, clip 235MB
 
 
-
 torch::Tensor decompress(const std::string filename, std::vector<int64_t> shape, std::string dtype) {
   std::vector<uint8_t> compressed_data;
   size_t input_buffer_len;
@@ -636,7 +635,10 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   file << ",\"total_copy_time\":" << total_copy_time.count() << ",\"total_decomp_time\":" << total_decomp_time.count();
   file << ",\"total_file_size\":" << total_file_size << ",\"chunk_size\":" << CHUNK_SIZE;
   file << ",\"sleep\":" << getenv("SLEEP", 3);
+  file << ", \"name\":\"" << (std::getenv("NAME") ? std::getenv("NAME"): "unknown") << "\"";
   file << "}" << std::endl;
+  // close file
+  file.close();
 
 
   return tensors;
