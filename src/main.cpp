@@ -1,3 +1,4 @@
+#include <torch/extension.h>
 #include <pybind11/pybind11.h>
 #include "nvcomp/gdeflate.hpp"
 // #include "nvcomp/cascaded.hpp"
@@ -17,7 +18,6 @@
 #include <fstream>
 #include <vector>
 
-#include <torch/extension.h>
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
 
@@ -89,7 +89,7 @@ std::pair<uint8_t*, size_t> load_file_wrapper(const std::string& filename) {
 size_t round_up_kb(size_t size) { return (size + 1023) & -1024; }
 
 std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
-// std::string pprint(std::chrono::duration<int64_t, std::nano> duration, int precision = 2) {
+  // std::string pprint(std::chrono::duration<int64_t, std::nano> duration, int precision = 2) {
   if (duration < std::chrono::microseconds(1000))
     return std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()) + "µs";
   if (duration < std::chrono::milliseconds(2000)) // at least 2ms feels like better precision
@@ -108,7 +108,7 @@ std::string pprint(size_t bytes, int precision = 2) {
   else if (bytes < 1024 * 1024 * 1024)
     ss << static_cast<double>(bytes) / (1024 * 1024) << " MB";
   else
-    ss << static_cast<double>(bytes) / (1024 * 1024 * 1024) << " GB";   
+    ss << static_cast<double>(bytes) / (1024 * 1024 * 1024) << " GB";
   return ss.str();
 }
 
@@ -116,10 +116,25 @@ std::string pprint_throughput(size_t bytes, std::chrono::duration<int64_t, std::
   return pprint(bytes * 1e9 / std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()) + "/s";
 }
 
+// class FileLoader {
+// public:
+//   FileLoader(size_t total_size, size_t num_threads) : remaining_releases(num_threads) /* ...*/ {
+//     CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
+//   }
+//   ~FileLoader() { CUDA_CHECK(cudaFreeHost(shared_buffer)); }
+//   uint8_t* get_buffer(size_t size, size_t thread_id) {
+//     if (thread_offsets[thread_id] == 0)
+//       thread_offsets[thread_id] = global_offset.fetch_add(size);
+//     return shared_buffer + thread_offsets[thread_id];
+//   }
+// private: // ...
+// };
+
 class FileLoader {
 public:
   FileLoader(size_t total_size, size_t num_threads)
-    : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0), total_size(total_size), is_ready(false) {
+    : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0),
+    total_size(total_size), is_ready(false) /*, remaining_releases(num_threads) */ {
     // launch a single thread to allocate the buffer
     alloc_future = std::async(std::launch::async, [this, total_size]() {
       auto start = std::chrono::steady_clock::now();
@@ -132,8 +147,18 @@ public:
   ~FileLoader() {
     auto start = std::chrono::steady_clock::now();
     CUDA_CHECK(cudaFreeHost(shared_buffer));
-    log("freed "+ pprint(total_size) + " FileLoader buffer in " + pprint(std::chrono::steady_clock::now() - start));
+    log("freed " + pprint(total_size) + " FileLoader buffer in " + pprint(std::chrono::steady_clock::now() - start));
   }
+
+  // std::atomic<size_t> remaining_releases;
+  // static void release(void* arg) {
+  //   FileLoader* loader = static_cast<FileLoader*>(arg);
+  //   auto remaining = loader->remaining_releases.fetch_sub(1);
+  //   if (remaining == 1) {
+  //     log("all threads have released file loader, delete this");
+  //     delete loader;
+  //   } else log("remaining FileLoader releases: " + std::to_string(remaining - 1));
+  // }
 
   uint8_t* get_buffer(size_t size, size_t thread_id) {
     if (shared_buffer == nullptr)
@@ -383,12 +408,13 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   assert(total_file_size > 0);
   // initialize as a pointer to avoid later implicit destruction
   FileLoader* file_loader = new FileLoader(total_file_size, num_threads);
+  std::vector<cudaEvent_t> thread_copy_done(num_threads, nullptr);
 
 
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
     auto indexes = thread_to_idx[thread_id];
 
-    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, file_loader]() {
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, file_loader]() {
       log("started thread " + std::to_string(thread_id));
       auto thread_start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
@@ -432,6 +458,17 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         uint8_t* comp_buffer;
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
 
+        auto copy_done = thread_copy_done[thread_id];
+        if (copy_done != nullptr) {
+          auto start = std::chrono::steady_clock::now();
+          CUDA_CHECK(cudaEventSynchronize(copy_done)); // wait for previous copy to finish before changing host_compressed_data
+          log(prefix + "before using host_compressed_data, waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
+        }
+        else {
+          debug(prefix + "created event");
+          CUDA_CHECK(cudaEventCreateWithFlags(&thread_copy_done[thread_id], cudaEventDisableTiming));
+          copy_done = thread_copy_done[thread_id];
+        }
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
 
@@ -443,7 +480,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         // }
 
         host_compressed_data = file_loader->get_buffer(input_buffer_len, thread_id);
-
+        // .... we kind of need to check if the previous operation using this buffer is done
         size_t already_read = 0;
         int chunks = 0;
         while (already_read < input_buffer_len) {
@@ -454,10 +491,16 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
           already_read += to_read;
           chunks++;
         }
+        CUDA_CHECK(cudaEventRecord(copy_done, stream));
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         std::string pretty_chunk_size = pprint(std::min(CHUNK_SIZE, input_buffer_len), 0);
         log(prefix + "copied " + std::to_string(chunks) + " " + pretty_chunk_size + " chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
-      
+
+        // if (job_number == indexes.size() - 1) {
+        //   log(prefix + "scheduling release of file_loader on stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
+        //   CUDA_CHECK(cudaLaunchHostFunc(stream, FileLoader::release, file_loader));
+        // }
+
         if (TENSOR_EARLY)
           tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
         auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
@@ -511,8 +554,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
           log(prefix + "cuda stream error: " + std::string(cudaGetErrorString(cudaStreamQuery(stream))));
           throw e;
         }
-        
-        if (SYNC_DECOMPRESS) 
+
+        if (SYNC_DECOMPRESS)
           CUDA_CHECK(cudaStreamSynchronize(stream));
         // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
         ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
@@ -536,7 +579,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
 
       int throughput = std::round((float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
-      log("processed " + std::to_string(total_decompressed_size / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s)");
+      log("thread " + std::to_string(thread_id) + " processed " + std::to_string(total_decompressed_size / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
 
       // if (PINNED) CUDA_CHECK(cudaFreeHost(host_compressed_data));
 
@@ -556,6 +599,16 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
     total_decomp_time += thread_decomp_time;
   }
 
+  for (auto& event : thread_copy_done)
+    if (event != nullptr) {
+      CUDA_CHECK(cudaEventSynchronize(event));
+      CUDA_CHECK(cudaEventDestroy(event));
+    }
+    else
+      std::cerr << "a copy_done event is null, a thread must have failed to start or not done any work" << std::endl;
+
+  delete file_loader;
+
   auto sync_start = std::chrono::steady_clock::now();
   for (auto& thread_streams : streams)
     for (auto& stream : thread_streams)
@@ -566,8 +619,6 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   CUDA_CHECK(cudaDeviceSynchronize());
   log("Sync time: " + pprint(std::chrono::steady_clock::now() - sync_start));
 
-  // file_loader->~FileLoader();
-  delete file_loader;
 
   auto end_time = std::chrono::steady_clock::now();
   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
@@ -578,7 +629,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   log("Total copy time: " + std::to_string(total_copy_time.count()) + "[ms], total decomp time: " + std::to_string(total_decomp_time.count()) + "[ms]");
   log("Average copy time per file: " + std::to_string((total_copy_time / num_files).count()) + "[ms], average decomp time per file: " + std::to_string((total_decomp_time / num_files).count()) + "[ms]");
   log("Average copy time per thread: " + std::to_string((total_copy_time / num_threads).count()) + "[ms], average decomp time per thread: " + std::to_string((total_decomp_time / num_threads).count()) + "[ms]");
-  
+
   std::ofstream file("/tmp/stats.json", std::ios::app);
   file << "{\"elapsed_time\":" << elapsed_time << ",\"num_files\":" << num_files;
   file << ",\"num_threads\":" << num_threads << ",\"num_streams\":" << num_streams;
@@ -587,7 +638,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   file << ",\"sleep\":" << getenv("SLEEP", 3);
   file << "}" << std::endl;
 
-  
+
   return tensors;
 }
 

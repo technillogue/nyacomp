@@ -171,7 +171,7 @@ def good_load(path: str) -> dict:
     print(
         f"assignments in pickle are for {len(key_assignments)} threads, we have {threads} threads"
     )
-    if len(key_assignments) != threads:
+    if len(key_assignments) != threads or os.getenv("REDO_PARTITION"):
         assignments = partition.massage(
             tuple(state_dict[k]["len"] for k in keys), threads
         )
