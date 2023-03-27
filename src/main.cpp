@@ -436,6 +436,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         log(prefix + "copied " + std::to_string(chunks) + " 1MB chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
 
+        if (getenv("TENSOR_EARLY", 0))
+          tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
         debug(prefix + "creating manager with stream " + std::to_string(stream_int));
         auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
         // check if manager was already created
@@ -468,7 +470,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         //   CUDA_CHECK(cudaMallocAsync(&scratch_buffer, scratch_buffer_size, stream));
         // }
         // decomp_nvcomp_manager->set_scratch_buffer(scratch_buffer);
-        tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
+        if (!getenv("TENSOR_EARLY", 0))
+          tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
 
         bool safe = tensors[i].is_contiguous();
         if (!safe) {
@@ -494,14 +497,17 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
           log(prefix + "throwing exception");
           throw e;
         }
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        
+        if (getenv("SYNC_DECOMPRESS", 0)) 
+          CUDA_CHECK(cudaStreamSynchronize(stream));
         // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
         ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
 
         log(prefix + "decompressed " + std::to_string(i) + " in " + pprint(decomp_time) + ", freeing with stream " + std::to_string(stream_int) + "");
         // need to not free comp_buffer until the decompression is complete, so we should 
         CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
-        CUDA_CHECK(cudaStreamSynchronize(stream));
+        if (getenv("SYNC_FREE", 0))
+          CUDA_CHECK(cudaStreamSynchronize(stream));
 
         auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - file_start_time).count();
 
