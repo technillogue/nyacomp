@@ -95,7 +95,7 @@ def compress_state_dict(_path: str, treshold: int = 16000) -> tuple[int, int]:
                     "len_compressed": new_size,
                 }
                 sizes[key] = new_size
-                # param.data = torch.tensor([], dtype=param.dtype)
+                # parakey_m.data = torch.tensor([], dtype=param.dtype)
         else:
             total_compressed_size += len(data)
 
@@ -154,7 +154,7 @@ def dry_load(path: str) -> dict:
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
-    assignments = state_dict.pop("meta", [])
+    key_assignments = state_dict.pop("meta", [])
 
     keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
     keys.sort(key=lambda k: state_dict[k]["len"], reverse=True)
@@ -168,11 +168,20 @@ def good_load(path: str) -> dict:
         for k in keys
     ]
     threads = int(os.getenv("NUM_THREADS", os.cpu_count()))
-    if len(assignments) != threads:
-        assignments = partition.massage(tuple(state_dict[k]["len"] for k in keys), threads)
+    print(
+        f"assignments in pickle are for {len(key_assignments)} threads, we have {threads} threads"
+    )
+    if len(key_assignments) != threads:
+        assignments = partition.massage(
+            tuple(state_dict[k]["len"] for k in keys), threads
+        )
+    else:
+        assignments = [[keys.index(key) for key in bin] for bin in key_assignments]
     assert all(assignments)
     for bin in assignments:
-        bin.sort(key=lambda k: state_dict[keys[k]]["len_compressed"], reverse=True)
+        biggest_file = max(bin, key=lambda k: state_dict[keys[k]]["len_compressed"])
+        bin.remove(biggest_file)
+        bin.insert(0, biggest_file)
 
     size = str(sum(state_dict[keys[bin[0]]]["len_compressed"] for bin in assignments))
     os.environ["TOTAL_FILE_SIZE"] = size
@@ -235,7 +244,7 @@ import timeit
 
 
 # compress_model()
-# compress_state_dict(str(guy))
+#compress_state_dict(str(guy))
 if __name__ == "__main__":
     torch.cuda.synchronize()
     if os.getenv("PROF"):
