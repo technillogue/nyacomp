@@ -100,15 +100,18 @@ std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
 
 std::string pprint(size_t bytes, int precision = 2) {
   std::stringstream ss;
-  ss << std::fixed << std::setprecision(precision);
-  if (bytes < 1024)
-    ss << bytes << " B";
-  else if (bytes < 1024 * 1024)
-    ss << static_cast<double>(bytes) / 1024 << " KB";
-  else if (bytes < 1024 * 1024 * 1024)
-    ss << static_cast<double>(bytes) / (1024 * 1024) << " MB";
+  const char* units[] = {"B", "KB", "MB", "GB"};
+  double value = bytes;
+  int unit = 0;
+  while (value >= 1024 && unit < 4) {
+    value /= 1024;
+    unit++;
+  }
+  if (std::fmod(value, 1) == 0)
+    ss << std::fixed << std::setprecision(0);
   else
-    ss << static_cast<double>(bytes) / (1024 * 1024 * 1024) << " GB";
+    ss << std::fixed << std::setprecision(precision);
+  ss << value << " " << units[unit];
   return ss.str();
 }
 
@@ -145,9 +148,13 @@ public:
   }
 
   ~FileLoader() {
+    if (shared_buffer == nullptr)
+      return;
+    size_t used = global_offset.load();
+    auto warning = (total_size - used) > 0 ? ("only " + pprint(used) + " used, but " + pprint(total_size - used) + " was unused. ") : "";
     auto start = std::chrono::steady_clock::now();
     CUDA_CHECK(cudaFreeHost(shared_buffer));
-    log("freed " + pprint(total_size) + " FileLoader buffer in " + pprint(std::chrono::steady_clock::now() - start));
+    log(warning + "freed " + pprint(total_size) + " FileLoader buffer in " + pprint(std::chrono::steady_clock::now() - start));
   }
 
   // std::atomic<size_t> remaining_releases;
@@ -478,10 +485,50 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         //   log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
         // }
 
-        host_compressed_data = file_loader->get_buffer(input_buffer_len, thread_id);
-        // .... we kind of need to check if the previous operation using this buffer is done
+        // if CHUNK_SIZE is 1 MB and the file is 64kb, input_buffer_len / CHUNNK_SIZE = 64 / 1024 = 0, so we need to round up
+        
+   
+
         size_t already_read = 0;
         int chunks = 0;
+
+        if (getenv("CIRCLE", 1)) {
+
+          int num_buffers = std::min(getenv("NUM_BUFFERS", 4), (int) ((input_buffer_len + CHUNK_SIZE - 1) / CHUNK_SIZE));
+
+          host_compressed_data = file_loader->get_buffer(CHUNK_SIZE * num_buffers, thread_id);
+
+          // vector of 4 buffers, each pointing to 1/4 offsets into the buffer
+          std::vector<uint8_t*> host_buffers(num_buffers);
+          for (int i = 0; i < num_buffers; i++)
+            host_buffers[i] = host_compressed_data + i * CHUNK_SIZE;
+          
+          std::vector<cudaEvent_t> circle_done_events(num_buffers);
+
+
+          int buffer_id = 0;
+          while (already_read < input_buffer_len) {
+            buffer_id = chunks % num_buffers;
+            if (circle_done_events[buffer_id] != nullptr) {
+              auto start = std::chrono::steady_clock::now();
+              CUDA_CHECK(cudaEventSynchronize(circle_done_events[buffer_id])); // wait for previous copy to finish before changing host_compressed_data
+              log(prefix + "before using next buffer " + std::to_string(buffer_id) + ", waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
+            }
+            else {
+              debug(prefix + "created event");
+              CUDA_CHECK(cudaEventCreateWithFlags(&circle_done_events[buffer_id], cudaEventDisableTiming));
+            }
+            size_t to_read = std::min(CHUNK_SIZE, input_buffer_len - already_read);
+            if (!file.read(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read))
+              throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + ")");
+            CUDA_CHECK(cudaMemcpyAsync(comp_buffer + already_read, host_buffers[buffer_id], to_read, cudaMemcpyDefault, stream));
+            already_read += to_read;
+            chunks++;
+            CUDA_CHECK(cudaEventRecord(circle_done_events[buffer_id], stream));
+          }
+          thread_copy_done[thread_id] = circle_done_events[buffer_id];
+        } else {
+        host_compressed_data = file_loader->get_buffer(input_buffer_len, thread_id);
         while (already_read < input_buffer_len) {
           size_t to_read = std::min(CHUNK_SIZE, input_buffer_len - already_read);
           if (!file.read(reinterpret_cast<char*>(host_compressed_data + already_read), to_read))
@@ -490,7 +537,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
           already_read += to_read;
           chunks++;
         }
-        CUDA_CHECK(cudaEventRecord(copy_done, stream));
+        CUDA_CHECK(cudaEventRecord(thread_copy_done[thread_id], stream));
+        }
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         std::string pretty_chunk_size = pprint(std::min(CHUNK_SIZE, input_buffer_len), 0);
         log(prefix + "copied " + std::to_string(chunks) + " " + pretty_chunk_size + " chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
@@ -559,7 +607,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
         ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
 
-        log(prefix + "decompressed " + std::to_string(i) + " in " + pprint(decomp_time) + ", freeing with stream " + std::to_string(stream_int) + "");
+        log(prefix + "decompressed in " + pprint(decomp_time) + ", freeing with stream " + std::to_string(stream_int) + "");
         // need to not free comp_buffer until the decompression is complete, so we should 
         CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
         if (SYNC_FREE)

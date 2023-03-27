@@ -241,20 +241,23 @@ except IndexError:
 import timeit
 
 
+def with_cleanup(guy: str) -> None:
+    d = good_load(guy)
+    for k in list(d):
+        del d[k]
+
+
 # compress_model()
 #compress_state_dict(str(guy))
 if __name__ == "__main__":
     torch.cuda.synchronize()
     if os.getenv("PROF"):
         import sys
-
-        dd = good_load(guy)
-        for k in list(dd):
-            del dd[k]
+        with_cleanup(guy)
         sys.exit(0)
     os.environ["NAME"] = "run-" + str(int(time.time()))
     times = [
-        timeit.timeit("good_load(guy)", number=1, globals=globals()) for i in range(4)
+        timeit.timeit("with_cleanup(guy)", number=1, globals=globals()) for i in range(4)
     ]
     runs = list(map(json.loads, open("/tmp/stats.json")))
     print(os.environ["NAME"], " load_compressed: ", stats(times))
