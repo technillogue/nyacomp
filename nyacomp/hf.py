@@ -1,3 +1,4 @@
+import math
 import contextlib
 import ctypes
 import json
@@ -180,9 +181,10 @@ def good_load(path: str) -> dict:
         biggest_file = max(bin, key=lambda k: state_dict[keys[k]]["len_compressed"])
         bin.remove(biggest_file)
         bin.insert(0, biggest_file)
-
-    size = str(sum(state_dict[keys[bin[0]]]["len_compressed"] for bin in assignments))
-    os.environ["TOTAL_FILE_SIZE"] = size
+    chunk_size = 1 << int(os.getenv("CHUNK_SIZE", 20))
+    first_sizes = [state_dict[keys[bin[0]]]["len_compressed"] for bin in assignments]
+    size = sum(min(math.ceil(s / chunk_size), 4) * chunk_size for s in first_sizes)
+    os.environ["TOTAL_FILE_SIZE"] = str(size)
 
     # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
@@ -242,9 +244,17 @@ import timeit
 
 
 def with_cleanup(guy: str) -> None:
+    prev_size = torch.cuda.memory.memory_reserved()
     d = good_load(guy)
     for k in list(d):
         del d[k]
+    used_size  = torch.cuda.memory.memory_reserved()
+    torch.cuda.memory.empty_cache()
+    freed_size  = torch.cuda.memory.memory_reserved()
+    print("previous torch mem", prev_size, "used mem", used_size, "mem after clearing cache", freed_size)
+    if torch.cuda.memory.memory_reserved() > prev_size:
+        import pdb
+        pdb.set_trace()
 
 
 # compress_model()
@@ -255,11 +265,11 @@ if __name__ == "__main__":
         import sys
         with_cleanup(guy)
         sys.exit(0)
-    os.environ["NAME"] = "run-" + str(int(time.time()))
+    os.environ["NAME"] = name = "run-" + str(int(time.time()))
     times = [
         timeit.timeit("with_cleanup(guy)", number=1, globals=globals()) for i in range(4)
     ]
-    runs = list(map(json.loads, open("/tmp/stats.json")))
+    runs = [run for run in map(json.loads, open("/tmp/stats.json")) if run.get("name") == name]
     print(os.environ["NAME"], " load_compressed: ", stats(times))
     processing = [run["elapsed_time"] for run in runs]
     print("inner processing: ", stats(processing))

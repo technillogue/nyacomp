@@ -357,6 +357,9 @@ struct CompressedFile {
   std::vector<int64_t> tensor_shape;
   std::string dtype;
   size_t decompressed_size;
+
+  CompressedFile(const std::string& filename, const std::vector<int64_t>& tensor_shape, const std::string& dtype, const size_t decompressed_size)
+    : filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size) {}
 };
 
 
@@ -370,10 +373,15 @@ size_t get_fsize(std::string filename) {
 
 bool PINNED = getenv("PINNED", 0);
 
-size_t CHUNK_SIZE = getenv("CHUNK_SIZE", 1 << 20);
+size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
 int TENSOR_EARLY = getenv("TENSOR_EARLY", 0);
 int SYNC_DECOMPRESS = getenv("SYNC_DECOMPRESS", 0);
 int SYNC_FREE = getenv("SYNC_FREE", 0);
+int CIRCLE = getenv("CIRCLE", 1);
+int NUM_CIRCLE_BUFFERS = getenv("NUM_CIRCLE_BUFFERS", 4);
+
+size_t UNPINNED_JOBS = getenv("UNPINNED_JOBS", 2);
+int UNPINNED_THREADS = getenv("UNPINNED_THREADS", 8);
 
 
 std::vector<torch::Tensor> batch_decompress_threadpool(
@@ -438,6 +446,9 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         CUDA_CHECK(cudaStreamCreate(&streams[thread_id][stream_id]));
 
       log(std::to_string(thread_id) + ": creating streams took " + pprint(std::chrono::steady_clock::now() - create_stream_begin));
+      int unpinned_threads = streams.size() - UNPINNED_THREADS;
+
+      std::vector<cudaEvent_t> circle_done_events(NUM_CIRCLE_BUFFERS, nullptr);
 
       for (size_t job_number = 0; job_number < indexes.size(); job_number++) {
         int i = indexes[job_number];
@@ -478,23 +489,20 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         auto copy_begin = std::chrono::steady_clock::now();
         debug(prefix + "copying to device with stream " + std::to_string(stream_int));
 
-        // if (i != 0 && i < getenv("UNPINNED", 0)) {
-        //   std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
-        //   CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
-        //   copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
-        //   log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
-        // }
-
-        // if CHUNK_SIZE is 1 MB and the file is 64kb, input_buffer_len / CHUNNK_SIZE = 64 / 1024 = 0, so we need to round up
-        
-   
 
         size_t already_read = 0;
         int chunks = 0;
+        std::string copy_message = "";
 
-        if (getenv("CIRCLE", 1)) {
-
-          int num_buffers = std::min(getenv("NUM_BUFFERS", 4), (int) ((input_buffer_len + CHUNK_SIZE - 1) / CHUNK_SIZE));
+        if (CIRCLE && i != 0 && job_number < UNPINNED_JOBS && thread_id > unpinned_threads) {
+          std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
+          CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
+          copy_message = "unpinned ";
+          // log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
+        }
+        else if (CIRCLE) {
+          // V100 has 6MB L2 cache (per device) and 128 kB L1 cache(per SM).
+          int num_buffers = std::min(NUM_CIRCLE_BUFFERS, (int) ((input_buffer_len + CHUNK_SIZE - 1) / CHUNK_SIZE));
 
           host_compressed_data = file_loader->get_buffer(CHUNK_SIZE * num_buffers, thread_id);
 
@@ -541,7 +549,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         }
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         std::string pretty_chunk_size = pprint(std::min(CHUNK_SIZE, input_buffer_len), 0);
-        log(prefix + "copied " + std::to_string(chunks) + " " + pretty_chunk_size + " chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
+        log(prefix + copy_message + "copied " + std::to_string(chunks) + " " + pretty_chunk_size + " chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
 
         // if (job_number == indexes.size() - 1) {
         //   log(prefix + "scheduling release of file_loader on stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
