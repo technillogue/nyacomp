@@ -371,6 +371,24 @@ size_t get_fsize(std::string filename) {
 }
 
 
+// struct DeviceBuffer {
+//   uint8_t* data;
+//   size_t size;
+//   cudaEvent_t free_event;
+
+//   DeviceBuffer(size_t size, cudaStream_t stream)
+//     : size(size) {
+//       CUDA_CHECK(cudaMallocAsync(&data, size, stream));
+//       CUDA_CHECK(cudaEventCreateWithFlags(&free_event, cudaEventDisableTiming));
+//     }
+  
+//   // ~DeviceBuffer() {
+//   //   CUDA_CHECK(cudaEventSynchronize(free_event));
+//   //   CUDA_CHECK(cudaFree(data));
+//   //   CUDA_CHECK(cudaEventDestroy(free_event));
+//   // }
+// };
+
 bool PINNED = getenv("PINNED", 0);
 
 size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
@@ -471,7 +489,12 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
         file.seekg(0, std::ios::beg);
 
         debug(prefix + "allocating device memory with stream " + std::to_string(stream_int));
-        // CUDA_CHECK(cudaStreamSynchronize(stream));
+
+        // for (auto &buffer : device_buffers)
+        //   if (buffer.size >= input_buffer_len) 
+        //     if (cudaEventQuery(buffer.free_event) == cudaSuccess)
+        //       break;
+        
         uint8_t* comp_buffer;
         CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
 
