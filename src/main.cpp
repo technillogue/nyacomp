@@ -53,6 +53,8 @@ void log(const std::string& msg) {
     std::cout << msg << std::endl;
 }
 
+
+
 std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
   if (!file.is_open())
@@ -84,6 +86,13 @@ std::pair<uint8_t*, size_t> load_file_wrapper(const std::string& filename) {
   debug("read " + std::to_string(file_size) + " bytes from " + filename);
 
   return std::make_pair(buffer, file_size);
+}
+
+size_t get_fsize(std::string filename) {
+  struct stat st;
+  if (stat(filename.c_str(), &st) != 0)
+    return (long)0;
+  return st.st_size;
 }
 
 size_t round_up_kb(size_t size) { return (size + 1023) & -1024; }
@@ -119,103 +128,7 @@ std::string pprint_throughput(size_t bytes, std::chrono::duration<int64_t, std::
   return pprint(bytes * 1e9 / std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()) + "/s";
 }
 
-// class FileLoader {
-// public:
-//   FileLoader(size_t total_size, size_t num_threads) : remaining_releases(num_threads) /* ...*/ {
-//     CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
-//   }
-//   ~FileLoader() { CUDA_CHECK(cudaFreeHost(shared_buffer)); }
-//   uint8_t* get_buffer(size_t size, size_t thread_id) {
-//     if (thread_offsets[thread_id] == 0)
-//       thread_offsets[thread_id] = global_offset.fetch_add(size);
-//     return shared_buffer + thread_offsets[thread_id];
-//   }
-// private: // ...
-// };
 
-class FileLoader {
-public:
-  FileLoader(size_t total_size, size_t num_threads)
-    : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0),
-    total_size(total_size), is_ready(false) /*, remaining_releases(num_threads) */ {
-    // launch a single thread to allocate the buffer
-    alloc_future = std::async(std::launch::async, [this, total_size]() {
-      auto start = std::chrono::steady_clock::now();
-      CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
-      log("allocated shared " + pprint(total_size) + " in " + pprint(std::chrono::steady_clock::now() - start));
-      is_ready.store(true, std::memory_order_release);
-      });
-  }
-
-  ~FileLoader() {
-    if (shared_buffer == nullptr)
-      return;
-    size_t used = global_offset.load();
-    auto warning = (total_size - used) > 0 ? ("only " + pprint(used) + " used, but " + pprint(total_size - used) + " was unused. ") : "";
-    auto start = std::chrono::steady_clock::now();
-    CUDA_CHECK(cudaFreeHost(shared_buffer));
-    log(warning + "freed " + pprint(total_size) + " FileLoader buffer in " + pprint(std::chrono::steady_clock::now() - start));
-  }
-
-  // std::atomic<size_t> remaining_releases;
-  // static void release(void* arg) {
-  //   FileLoader* loader = static_cast<FileLoader*>(arg);
-  //   auto remaining = loader->remaining_releases.fetch_sub(1);
-  //   if (remaining == 1) {
-  //     log("all threads have released file loader, delete this");
-  //     delete loader;
-  //   } else log("remaining FileLoader releases: " + std::to_string(remaining - 1));
-  // }
-
-  uint8_t* get_buffer(size_t size, size_t thread_id) {
-    if (shared_buffer == nullptr)
-      alloc_future.wait();
-    if (thread_sizes[thread_id] == 0 && thread_offsets[thread_id] == 0) {
-      size_t offset = global_offset.fetch_add(size, std::memory_order_relaxed);
-      if (offset + size > total_size) {
-        size_t remaining = total_size - offset;
-        throw std::runtime_error("Shared buffer is not large enough to accommodate " + pprint(size) + " bytes requested by thread " + std::to_string(thread_id) + ", " + pprint(remaining) + "  total bytes");
-      }
-      thread_offsets[thread_id] = offset;
-      thread_sizes[thread_id] = size;
-    }
-    else {
-      if (size > thread_sizes[thread_id])
-        throw std::runtime_error("Requested size " + pprint(size) + " is larger than than " + pprint(thread_sizes[thread_id]) + " previously allocated for thread " + std::to_string(thread_id));
-    }
-    return shared_buffer + thread_offsets[thread_id];
-  }
-
-  std::pair<uint8_t*, size_t> load_file_pinned(const std::string& filename, size_t thread_id) {
-    if (shared_buffer == nullptr)
-      alloc_future.wait();
-    std::ifstream file(filename, std::ios::binary | std::ios::ate);
-    size_t file_size = static_cast<size_t>(file.tellg());
-
-    if (thread_offsets[thread_id] == 0) {
-      size_t offset = global_offset.fetch_add(file_size);
-      if (offset + file_size > total_size)
-        throw std::runtime_error("Shared buffer is not large enough to accommodate the file.");
-      thread_offsets[thread_id] = offset;
-    }
-
-    uint8_t* buffer = shared_buffer + thread_offsets[thread_id];
-
-    file.seekg(0, std::ios::beg);
-    file.read(reinterpret_cast<char*>(buffer), file_size);
-
-    return std::make_pair(buffer, file_size);
-  }
-
-private:
-  uint8_t* shared_buffer;
-  std::vector<size_t> thread_offsets;
-  std::vector<size_t> thread_sizes;
-  std::atomic<size_t> global_offset;
-  size_t total_size;
-  std::future<void> alloc_future;
-  std::atomic<bool> is_ready;
-};
 
 int compress(py::bytes pybytes, const std::string filename) {
   std::string bytes_str = pybytes;
@@ -349,8 +262,103 @@ torch::Tensor decompress(const std::string filename, std::vector<int64_t> shape,
   return tensor;
 }
 
+// class FileLoader {
+// public:
+//   FileLoader(size_t total_size, size_t num_threads) : remaining_releases(num_threads) /* ...*/ {
+//     CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
+//   }
+//   ~FileLoader() { CUDA_CHECK(cudaFreeHost(shared_buffer)); }
+//   uint8_t* get_buffer(size_t size, size_t thread_id) {
+//     if (thread_offsets[thread_id] == 0)
+//       thread_offsets[thread_id] = global_offset.fetch_add(size);
+//     return shared_buffer + thread_offsets[thread_id];
+//   }
+// private: // ...
+// };
 
-using ms_t = std::chrono::milliseconds;
+class FileLoader {
+public:
+  FileLoader(size_t total_size, size_t num_threads)
+    : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0),
+    total_size(total_size), is_ready(false) /*, remaining_releases(num_threads) */ {
+    // launch a single thread to allocate the buffer
+    alloc_future = std::async(std::launch::async, [this, total_size]() {
+      auto start = std::chrono::steady_clock::now();
+      CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
+      log("allocated shared " + pprint(total_size) + " in " + pprint(std::chrono::steady_clock::now() - start));
+      is_ready.store(true, std::memory_order_release);
+      });
+  }
+
+  ~FileLoader() {
+    if (shared_buffer == nullptr)
+      return;
+    size_t used = global_offset.load();
+    auto warning = (total_size - used) > 0 ? ("only " + pprint(used) + " used, but " + pprint(total_size - used) + " was unused. ") : "";
+    auto start = std::chrono::steady_clock::now();
+    CUDA_CHECK(cudaFreeHost(shared_buffer));
+    log(warning + "freed " + pprint(total_size) + " FileLoader buffer in " + pprint(std::chrono::steady_clock::now() - start));
+  }
+
+  // std::atomic<size_t> remaining_releases;
+  // static void release(void* arg) {
+  //   FileLoader* loader = static_cast<FileLoader*>(arg);
+  //   auto remaining = loader->remaining_releases.fetch_sub(1);
+  //   if (remaining == 1) {
+  //     log("all threads have released file loader, delete this");
+  //     delete loader;
+  //   } else log("remaining FileLoader releases: " + std::to_string(remaining - 1));
+  // }
+
+  uint8_t* get_buffer(size_t size, size_t thread_id) {
+    if (shared_buffer == nullptr)
+      alloc_future.wait();
+    if (thread_sizes[thread_id] == 0 && thread_offsets[thread_id] == 0) {
+      size_t offset = global_offset.fetch_add(size, std::memory_order_relaxed);
+      if (offset + size > total_size) {
+        size_t remaining = total_size - offset;
+        throw std::runtime_error("Shared buffer is not large enough to accommodate " + pprint(size) + " bytes requested by thread " + std::to_string(thread_id) + ", " + pprint(remaining) + "  total bytes");
+      }
+      thread_offsets[thread_id] = offset;
+      thread_sizes[thread_id] = size;
+    }
+    else {
+      if (size > thread_sizes[thread_id])
+        throw std::runtime_error("Requested size " + pprint(size) + " is larger than than " + pprint(thread_sizes[thread_id]) + " previously allocated for thread " + std::to_string(thread_id));
+    }
+    return shared_buffer + thread_offsets[thread_id];
+  }
+
+  std::pair<uint8_t*, size_t> load_file_pinned(const std::string& filename, size_t thread_id) {
+    if (shared_buffer == nullptr)
+      alloc_future.wait();
+    std::ifstream file(filename, std::ios::binary | std::ios::ate);
+    size_t file_size = static_cast<size_t>(file.tellg());
+
+    if (thread_offsets[thread_id] == 0) {
+      size_t offset = global_offset.fetch_add(file_size);
+      if (offset + file_size > total_size)
+        throw std::runtime_error("Shared buffer is not large enough to accommodate the file.");
+      thread_offsets[thread_id] = offset;
+    }
+
+    uint8_t* buffer = shared_buffer + thread_offsets[thread_id];
+
+    file.seekg(0, std::ios::beg);
+    file.read(reinterpret_cast<char*>(buffer), file_size);
+
+    return std::make_pair(buffer, file_size);
+  }
+
+private:
+  uint8_t* shared_buffer;
+  std::vector<size_t> thread_offsets;
+  std::vector<size_t> thread_sizes;
+  std::atomic<size_t> global_offset;
+  size_t total_size;
+  std::future<void> alloc_future;
+  std::atomic<bool> is_ready;
+};
 
 struct CompressedFile {
   std::string filename;
@@ -363,12 +371,7 @@ struct CompressedFile {
 };
 
 
-size_t get_fsize(std::string filename) {
-  struct stat st;
-  if (stat(filename.c_str(), &st) != 0)
-    return (long)0;
-  return st.st_size;
-}
+
 
 
 // struct DeviceBuffer {
@@ -388,6 +391,9 @@ size_t get_fsize(std::string filename) {
 //   //   CUDA_CHECK(cudaEventDestroy(free_event));
 //   // }
 // };
+
+
+using ms_t = std::chrono::milliseconds;
 
 bool PINNED = getenv("PINNED", 0);
 
@@ -539,6 +545,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
           int buffer_id = 0;
           while (already_read < input_buffer_len) {
+            // posix_fadvise(fd, already_read, next_chunk_len, POSIX_FADV_WILLNEED);
             buffer_id = chunks % num_buffers;
             if (circle_done_events[buffer_id] != nullptr) {
               auto start = std::chrono::steady_clock::now();
@@ -764,6 +771,8 @@ PYBIND11_MODULE(_nyacomp, m) {
 
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
+
+  //  py::call_guard<py::gil_scoped_release>()
   m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
 
   py::class_<CompressedFile>(m, "CompressedFile")
