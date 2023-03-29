@@ -323,8 +323,10 @@ public:
       thread_sizes[thread_id] = size;
     }
     else {
-      if (size > thread_sizes[thread_id])
+      if (size > thread_sizes[thread_id]) {
+        log("Requested size " + pprint(size) + " is larger than than " + pprint(thread_sizes[thread_id]) + " previously allocated for thread " + std::to_string(thread_id));
         throw std::runtime_error("Requested size " + pprint(size) + " is larger than than " + pprint(thread_sizes[thread_id]) + " previously allocated for thread " + std::to_string(thread_id));
+      }
     }
     return shared_buffer + thread_offsets[thread_id];
   }
@@ -366,6 +368,8 @@ struct CompressedFile {
   std::string dtype;
   size_t decompressed_size;
 
+  CompressedFile() = default;
+
   CompressedFile(const std::string& filename, const std::vector<int64_t>& tensor_shape, const std::string& dtype, const size_t decompressed_size)
     : filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size) {}
 };
@@ -391,6 +395,25 @@ struct CompressedFile {
 //   //   CUDA_CHECK(cudaEventDestroy(free_event));
 //   // }
 // };
+
+
+class SyncedGdeflateManager : public GdeflateManager {
+public:
+  SyncedGdeflateManager(int chunk_size, int compression_level, cudaStream_t stream)
+    : GdeflateManager(chunk_size, compression_level, stream), stream_(stream) {}
+
+  // Override the destructor
+  ~SyncedGdeflateManager() {
+    // Synchronize the stream before the GdeflateManager's destructor is called
+    log("SyncedGdeflateManager destructor called");
+    auto start = std::chrono::steady_clock::now();
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    log("~SyncedGdeflateManager took " + pprint(std::chrono::steady_clock::now() - start));
+  }
+
+private:
+  cudaStream_t stream_;
+};
 
 
 using ms_t = std::chrono::milliseconds;
@@ -446,13 +469,14 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   assert(total_file_size > 0);
   // initialize as a pointer to avoid later implicit destruction
   FileLoader* file_loader = new FileLoader(total_file_size, num_threads);
-  std::vector<cudaEvent_t> thread_copy_done(num_threads, nullptr);
+  std::vector<cudaEvent_t> thread_copy_done(num_threads, nullptr);{
+  std::vector<std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>>> thread_managers(num_threads);
 
 
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
     auto indexes = thread_to_idx[thread_id];
 
-    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, file_loader]() {
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
       log("started thread " + std::to_string(thread_id));
       auto thread_start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
@@ -592,7 +616,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
         if (!decomp_nvcomp_manager) {
           auto create_manager_begin = std::chrono::steady_clock::now();
-          decomp_nvcomp_manager = std::make_shared<GdeflateManager>(1 << 16, 0, stream); // 1 << 16 is 64KB
+          decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, 0, stream); // 1 << 16 is 64KB, 0 is fast compression
           managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
           log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
         }
@@ -667,7 +691,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
       log("thread " + std::to_string(thread_id) + " processed " + std::to_string(total_decompressed_size / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
 
       // if (PINNED) CUDA_CHECK(cudaFreeHost(host_compressed_data));
-
+      thread_managers[thread_id] = managers;
       return std::make_pair(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time));
       }));
     // sleep to give the first threads thread a chance to start 
@@ -683,6 +707,10 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
     total_copy_time += thread_copy_time;
     total_decomp_time += thread_decomp_time;
   }
+  
+  for (auto managers : thread_managers)
+    for (auto manager : managers)
+      manager.reset();
 
   for (auto& event : thread_copy_done)
     if (event != nullptr) {
@@ -692,7 +720,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
     else
       std::cerr << "a copy_done event is null, a thread must have failed to start or not done any work" << std::endl;
 
-  delete file_loader;
+  delete file_loader;}
 
   auto sync_start = std::chrono::steady_clock::now();
   for (auto& thread_streams : streams)
@@ -770,7 +798,6 @@ PYBIND11_MODULE(_nyacomp, m) {
   m.def("compress", &compress, R"pbdoc(compress)pbdoc", py::arg("data"), py::arg("filename"));
 
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
-
 
   //  py::call_guard<py::gil_scoped_release>()
   m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));

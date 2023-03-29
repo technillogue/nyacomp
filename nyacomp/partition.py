@@ -15,8 +15,8 @@ import functools
 
 
 def ffd_binpack(sizes: list[int], capacity: int) -> list[list[int]]:
-    bins = []
-    bin_sizes = []
+    bins: list[list[int]] = []
+    bin_sizes: list[int] = []
     for number in sizes:
         possible_inserts = (
             i for i, size in enumerate(bin_sizes) if size + number <= capacity
@@ -76,7 +76,7 @@ def partition(sizes: list[int], bins: int = 32) -> list[list[int]]:
     def indexes_to_sizes(indx: list[list[int]]) -> list[list[int]]:
         return [[sizes[i] for i in bin] for bin in indx]
 
-    counts = [Counter([sizes[i] for i in bin]) for bin in indx]
+    counts = [Counter([sizes[i] for i in bin]) for bin in indexes]
     size_bins = indexes_to_sizes(indexes)
 
     for bin_number, bin in enumerate(bin_number, size_bins):
@@ -108,7 +108,7 @@ def score(binning: list[list[int]]) -> tuple[int, int]:
 # that is, few bins with the biggest sizes
 # instead of changes 
 
-def greedy_partition(sizes: list[int], n_bins: int = 32) -> list[list[int]]:
+def greedy_partition(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
     bins = [[] for _ in range(n_bins)]
     bin_sizes = [0] * n_bins
 
@@ -118,7 +118,6 @@ def greedy_partition(sizes: list[int], n_bins: int = 32) -> list[list[int]]:
         for i, bin in enumerate(bins):
             # of threads that are bigger max size than this, take the least full one
             # otherwise take the one this increases the least
-            # 
             new_size = bin_sizes[i] + number
             makespan_increase = max(0, new_size - current_makespan)
             candidates.append((makespan_increase, max(number - max(bin, default=0), 0), bin_sizes[i], i))

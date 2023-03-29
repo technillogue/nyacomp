@@ -6,7 +6,6 @@ import os
 import time
 from pathlib import Path
 from typing import Iterator
-
 # import diffusers
 # from nyacomp import partition
 import partition
@@ -14,6 +13,16 @@ import partition
 import torch
 
 import _nyacomp
+from nvtx import annotate
+
+# try:
+# except ImportError:
+#     def annotate(arg):
+#         if isinstance(arg, Callable):
+#             return arg
+#         if isinstance(arg, str):
+#             return ... # empty
+
 
 @contextlib.contextmanager
 def timer(msg: str) -> Iterator[None]:
@@ -150,6 +159,7 @@ def dry_load(path: str) -> dict:
     json.dump([fnames, shapes, dtypes], open("/tmp/shapes", "w"))
 
 
+@annotate("good_load")
 def good_load(path: str) -> dict:
     dir = Path(path).parent / "nya"
     state_dict = torch.load(dir / f"boneless_{Path(path).name}")
@@ -195,19 +205,21 @@ def good_load(path: str) -> dict:
     # tensors = _nyacomp.decompress_batch_async_new(fnames, shapes, dtypes)
     return state_dict | dict(zip(keys, tensors))
 
+def toggle_patch(m: "types.ModuleType") -> None:
+    if m.load_state_dict == good_load:
+        m.load_state_dict = m._load_state_dict
+    else:
+        m.load_state_dict, m._load_state_dict = good_load, m.load_state_dict
 
-def toggle_patch():
+def toggle_diffusers():
     import diffusers
 
-    if diffusers.modeling_utils.load_state_dict == good_load:
-        diffusers.modeling_utils.load_state_dict = (
-            diffusers.modeling_utils._load_state_dict
-        )
-    else:
-        diffusers.modeling_utils._load_state_dict = (
-            diffusers.modeling_utils.load_state_dict
-        )
-        diffusers.modeling_utils.load_state_dict = good_load
+    toggle_patch(diffusers.modeling_utils)
+
+def toggle_transformers():
+    import transformers
+
+    toggle_patch(transformers.modeling_utils)
 
 
 def stats(times: list[int|float]) -> str:
@@ -256,14 +268,26 @@ def with_cleanup(guy: str) -> None:
         import pdb
         pdb.set_trace()
 
+#transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True)
+
+
 
 # compress_model()
 #compress_state_dict(str(guy))
 if __name__ == "__main__":
     torch.cuda.synchronize()
     if os.getenv("PROF"):
+        toggle_transformers()
+        import transformers
+        with timer("from_pretrained"):
+            import pdb
+            pdb.set_trace()
+            with annotate("from_pretrained", color="green"):
+                model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True, low_cpu_mem_usage=True, device_map="auto")
+        with annotate("to cuda"):
+            model.to("cuda")
         import sys
-        with_cleanup(guy)
+        #with_cleanup(guy)
         sys.exit(0)
     os.environ["NAME"] = name = "run-" + str(int(time.time()))
     times = [
