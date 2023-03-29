@@ -196,8 +196,8 @@ def good_load(path: str) -> dict:
     size = sum(min(math.ceil(s / chunk_size), 4) * chunk_size for s in first_sizes)
     os.environ["TOTAL_FILE_SIZE"] = str(size)
 
-    # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
-    tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
+    # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
+    tensors = _nyacomp.batch_decompress(files, assignments)
     if None in tensors:
         import pdb
 

@@ -132,17 +132,14 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     size = sum(min(math.ceil(s / chunk_size), 4) * chunk_size for s in first_sizes)
     os.environ["TOTAL_FILE_SIZE"] = str(size)
 
-    # tensors = _nyacomp.good_batch_decompress_threadpool(fnames, shapes, dtypes, -1, -1)
-    tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
+    # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
+    tensors = _nyacomp.batch_decompress(files, assignments)
     if None in tensors:
         import pdb
 
         pdb.set_trace()
 
-
-    tensors = _nyacomp.batch_decompress_threadpool(files, assignments)
     tensors_iter = iter(tensors)
-
     model = torch.load(fname, map_location="cuda:0")
     for param, meta in zip(model.parameters(), metadata):
         if meta:

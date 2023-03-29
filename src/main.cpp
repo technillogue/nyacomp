@@ -399,20 +399,21 @@ struct CompressedFile {
 
 class SyncedGdeflateManager : public GdeflateManager {
 public:
-  SyncedGdeflateManager(int chunk_size, int compression_level, cudaStream_t stream)
-    : GdeflateManager(chunk_size, compression_level, stream), stream_(stream) {}
+  SyncedGdeflateManager(int chunk_size, int compression_level, cudaStream_t stream, std::string name)
+    : GdeflateManager(chunk_size, compression_level, stream), stream_(stream), name(name) {}
 
   // Override the destructor
   ~SyncedGdeflateManager() {
     // Synchronize the stream before the GdeflateManager's destructor is called
-    log("SyncedGdeflateManager destructor called");
+    log("SyncedGdeflateManager " + name + " called");
     auto start = std::chrono::steady_clock::now();
     CUDA_CHECK(cudaStreamSynchronize(stream_));
-    log("~SyncedGdeflateManager took " + pprint(std::chrono::steady_clock::now() - start));
+    log("~SyncedGdeflateManager " + name + " took " + pprint(std::chrono::steady_clock::now() - start));
   }
 
 private:
   cudaStream_t stream_;
+  std::string name;
 };
 
 
@@ -431,7 +432,7 @@ size_t UNPINNED_JOBS = getenv("UNPINNED_JOBS", 2);
 int UNPINNED_THREADS = getenv("UNPINNED_THREADS", 8);
 
 
-std::vector<torch::Tensor> batch_decompress_threadpool(
+std::vector<torch::Tensor> batch_decompress(
   const std::vector<CompressedFile>& files,
   const std::vector<std::vector<int>>& thread_to_idx
 ) {
@@ -469,7 +470,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   assert(total_file_size > 0);
   // initialize as a pointer to avoid later implicit destruction
   FileLoader* file_loader = new FileLoader(total_file_size, num_threads);
-  std::vector<cudaEvent_t> thread_copy_done(num_threads, nullptr);{
+  std::vector<cudaEvent_t> thread_copy_done(num_threads, nullptr);
   std::vector<std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>>> thread_managers(num_threads);
 
 
@@ -482,7 +483,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
       CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
 
       std::chrono::microseconds thread_copy_time, thread_decomp_time = std::chrono::milliseconds::zero();
-      std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>> managers(streams_per_thread);
+      std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>> managers(streams_per_thread, nullptr);
       int64_t total_decompressed_size = 0;
 
       // uint8_t* scratch_buffer = nullptr;
@@ -564,9 +565,6 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
           for (int i = 0; i < num_buffers; i++)
             host_buffers[i] = host_compressed_data + i * CHUNK_SIZE;
           
-          std::vector<cudaEvent_t> circle_done_events(num_buffers);
-
-
           int buffer_id = 0;
           while (already_read < input_buffer_len) {
             // posix_fadvise(fd, already_read, next_chunk_len, POSIX_FADV_WILLNEED);
@@ -616,7 +614,8 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
 
         if (!decomp_nvcomp_manager) {
           auto create_manager_begin = std::chrono::steady_clock::now();
-          decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, 0, stream); // 1 << 16 is 64KB, 0 is fast compression
+          std::string name = "thread-" + std::to_string(thread_id) + "-stream-" + std::to_string(stream_int);
+          decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, 0, stream, name); // 1 << 16 is 64KB, 0 is fast compression
           managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
           log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
         }
@@ -657,7 +656,6 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
           decomp_nvcomp_manager->decompress(dest, comp_buffer, decomp_config);
         }
         catch (const std::exception& e) {
-          // check each of the resource handles to see if they're valid
           log(prefix + "exception: " + std::string(e.what()));
           log(prefix + "cuda error: " + std::string(cudaGetErrorString(cudaGetLastError())));
           log(prefix + "cuda stream error: " + std::string(cudaGetErrorString(cudaStreamQuery(stream))));
@@ -691,7 +689,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
       log("thread " + std::to_string(thread_id) + " processed " + std::to_string(total_decompressed_size / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
 
       // if (PINNED) CUDA_CHECK(cudaFreeHost(host_compressed_data));
-      thread_managers[thread_id] = managers;
+      // thread_managers[thread_id] = managers;
       return std::make_pair(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time));
       }));
     // sleep to give the first threads thread a chance to start 
@@ -708,9 +706,9 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
     total_decomp_time += thread_decomp_time;
   }
   
-  for (auto managers : thread_managers)
-    for (auto manager : managers)
-      manager.reset();
+  // for (auto managers : thread_managers)
+  //   for (auto manager : managers)
+  //     manager.reset();
 
   for (auto& event : thread_copy_done)
     if (event != nullptr) {
@@ -720,7 +718,7 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
     else
       std::cerr << "a copy_done event is null, a thread must have failed to start or not done any work" << std::endl;
 
-  delete file_loader;}
+  delete file_loader;
 
   auto sync_start = std::chrono::steady_clock::now();
   for (auto& thread_streams : streams)
@@ -758,38 +756,38 @@ std::vector<torch::Tensor> batch_decompress_threadpool(
   return tensors;
 }
 
-extern "C" {
-  void fake_batch_decompress_threadpool() {
-    std::vector<std::string> filenames;
-    {
-      std::ifstream file("/tmp/filenames.txt");
-      std::string line;
-      while (std::getline(file, line)) filenames.push_back(line);
-    }
-    std::vector<std::vector<int64_t>> shapes;
-    {
-      std::ifstream file("/tmp/shapes.txt");
-      std::string line;
-      while (std::getline(file, line)) {
-        std::vector<int64_t> shape;
-        std::istringstream ss(line);
-        std::string token;
-        while (std::getline(ss, token, ',')) shape.push_back(std::stoll(token));
-        shapes.push_back(shape);
-      }
-    }
-    std::vector<std::string> dtypes(filenames.size(), "float32");
-    std::vector<CompressedFile> files(filenames.size());
-    for (int i = 0; i < (int)filenames.size(); i++) {
-      files[i].filename = filenames[i];
-      files[i].tensor_shape = shapes[i];
-      files[i].dtype = "float32";
-    }
-    std::vector<std::vector<int>> thread_to_indexes(getenv("NUM_THREADS", 32));
-    for (size_t i = 0; i < filenames.size(); i++) thread_to_indexes[i % thread_to_indexes.size()].push_back(i);
-    batch_decompress_threadpool(files, thread_to_indexes);
-  }
-}
+// extern "C" {
+//   void fake_batch_decompress() {
+//     std::vector<std::string> filenames;
+//     {
+//       std::ifstream file("/tmp/filenames.txt");
+//       std::string line;
+//       while (std::getline(file, line)) filenames.push_back(line);
+//     }
+//     std::vector<std::vector<int64_t>> shapes;
+//     {
+//       std::ifstream file("/tmp/shapes.txt");
+//       std::string line;
+//       while (std::getline(file, line)) {
+//         std::vector<int64_t> shape;
+//         std::istringstream ss(line);
+//         std::string token;
+//         while (std::getline(ss, token, ',')) shape.push_back(std::stoll(token));
+//         shapes.push_back(shape);
+//       }
+//     }
+//     std::vector<std::string> dtypes(filenames.size(), "float32");
+//     std::vector<CompressedFile> files(filenames.size());
+//     for (int i = 0; i < (int)filenames.size(); i++) {
+//       files[i].filename = filenames[i];
+//       files[i].tensor_shape = shapes[i];
+//       files[i].dtype = "float32";
+//     }
+//     std::vector<std::vector<int>> thread_to_indexes(getenv("NUM_THREADS", 32));
+//     for (size_t i = 0; i < filenames.size(); i++) thread_to_indexes[i % thread_to_indexes.size()].push_back(i);
+//     batch_decompress(files, thread_to_indexes);
+//   }
+// }
 
 PYBIND11_MODULE(_nyacomp, m) {
 
@@ -800,7 +798,7 @@ PYBIND11_MODULE(_nyacomp, m) {
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
   //  py::call_guard<py::gil_scoped_release>()
-  m.def("batch_decompress_threadpool", &batch_decompress_threadpool, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
+  m.def("batch_decompress", &batch_decompress, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
 
   py::class_<CompressedFile>(m, "CompressedFile")
     .def(py::init<const std::string&, const std::vector<int64_t>&, const std::string&, const size_t>());
