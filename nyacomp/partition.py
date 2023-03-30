@@ -109,6 +109,8 @@ def score(binning: list[list[int]]) -> tuple[int, int]:
 # instead of changes 
 
 def greedy_partition(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
+    sizes = list(sizes)
+    random.shuffle(sizes)
     bins = [[] for _ in range(n_bins)]
     bin_sizes = [0] * n_bins
 
@@ -148,6 +150,7 @@ def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
 
     ordered = sorted(sizes, reverse=True)
     bins = greedy_partition(sizes, n_bins)
+    #bins = multiway_partition(sizes, n_bins)
     assert sum(map(len, bins)) == len(sizes), "wrong"
 
     result = [[indx[size].pop(0) for size in bin] for bin in bins]

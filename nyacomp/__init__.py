@@ -14,6 +14,7 @@ import torch
 
 import _nyacomp
 
+
 @contextlib.contextmanager
 def timer(msg: str) -> "Iterator[None]":
     start = time.time()
@@ -32,15 +33,20 @@ def tensor_bytes(tensor: torch.Tensor) -> bytes:
     data = np.ctypeslib.as_array(newptr, (total_bytes,))  # no internal copy
     return data.tobytes()
 
+
 Tensory = torch.Tensor | torch.nn.Parameter
+
 
 def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
     size = len(data)
     if len(data) >= 1 << 14:  # 4 KB
-        print(f"compressing parameter to {path}")
-        new_size = _nyacomp.compress(data, str(path))
-        time.sleep(1)
+        if path.exists() and not os.getenv("RECOMPRESS"):
+            print(f"skipping already existing parameter at {path}")
+            new_size = path.stat().st_size
+        else:
+            print(f"compressing parameter to {path}")
+            new_size = _nyacomp.compress(data, str(path))
         if new_size < size:
             meta = {
                 "filename": str(path),
@@ -65,7 +71,7 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
         # parameters = list(model.named_parameters()))
         parameters = list(model.parameters())
     else:
-        parameters = [v for v in sorted(model.items())]
+        parameters = list(sorted(model.items()))
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
@@ -74,13 +80,13 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
     meta = []
 
     for i, param in enumerate(parameters):
-        path = dir / f"{i}.gz"
-        param_meta, size, new_size = compress_parameter(param, path)
+        param_path = dir / f"{i}.gz"
+        param_meta, size, new_size = compress_parameter(param, param_path)
         meta.append(param_meta)
         total_size += size
         total_compressed_size += new_size
 
-    threads = int(os.getenv("NUM_THREADS", os.cpu_count()))
+    threads = int(os.getenv("NUM_THREADS") or os.cpu_count())
     sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
     assignments = partition.massage(sizes, threads)
 
@@ -93,6 +99,7 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
 
     pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb"))
     print("overall compression ratio:", total_compressed_size / total_size)
+    print("saving boneless model to ", path)
     torch.save(model, str(path))
     return total_compressed_size / total_size
 
@@ -114,9 +121,8 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
         )
         for meta in real_meta
     ]
-    
 
-    threads = int(os.getenv("NUM_THREADS", os.cpu_count()))
+    threads = int(os.getenv("NUM_THREADS") or os.cpu_count())
     print(
         f"assignments in pickle are for {len(assignments)} threads, we have {threads} threads"
     )
@@ -129,11 +135,14 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
         bin.remove(biggest_file)
         bin.insert(0, biggest_file)
 
-    chunk_size = 1 << int(os.getenv("CHUNK_SIZE", 20))
+    chunk_size = 1 << int(os.getenv("CHUNK_SIZE") or 20)
     first_sizes = [real_meta[bin[0]]["decompressed_size"] for bin in assignments]
     size = sum(min(math.ceil(s / chunk_size), 4) * chunk_size for s in first_sizes)
     os.environ["TOTAL_FILE_SIZE"] = str(size)
-    json.dump({"meta": real_meta, "assignments": assignments, "size": size}, open("/tmp/init.json", "w"))
+    json.dump(
+        {"meta": real_meta, "assignments": assignments, "size": size},
+        open("/tmp/init.json", "w"),
+    )
 
     # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress(files, assignments)
@@ -143,7 +152,7 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
         pdb.set_trace()
 
     tensors_iter = iter(tensors)
-    model = torch.load(fname, map_location="cuda:0")
+    model = torch.load(path, map_location="cuda:0")
     for param, meta in zip(model.parameters(), metadata):
         if meta:
             param.data = next(tensors_iter)
@@ -151,15 +160,16 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     return model
 
 
-def stats(times: list[int|float]) -> str:
+def stats(times: list[int | float]) -> str:
     import statistics
 
-    stats = {
+    _stats = {
         "mean": statistics.mean(times),
         "stdev": statistics.stdev(times),
         "min": min(times),
     }
-    return " ".join(f"{k}: {round(v, 4)}" for k, v in stats.items())
+    return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
+
 
 if __name__ == "__main__":
     COMPRESS = os.getenv("COMPRESS")
@@ -168,13 +178,12 @@ if __name__ == "__main__":
         # import transformers
         # with timer("from_pretrained"):
         #     model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True)
-        model = torch.load("/tmp/clip.pth")
+        model = torch.load("/tmp/clip.pth", map_location="cpu")
         compress(model, model_path)
         del model
         torch.cuda.memory.empty_cache()
     with timer("load_compressed"):
         model = load_compressed(model_path)
-
 
 
 # memory use:
@@ -184,7 +193,7 @@ if __name__ == "__main__":
 #
 # we can try to solve for low max bandwidth by packing items more closely in time, less bandwidth with higher utilisation
 # have every thread finish at the same time even if it means more memory used as long as its under the memory makespan
-# 
+#
 
 
 # we could try using torch's memory allocator
