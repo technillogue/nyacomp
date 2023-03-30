@@ -1,3 +1,4 @@
+import json
 import contextlib
 import ctypes
 import math
@@ -39,6 +40,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     if len(data) >= 1 << 14:  # 4 KB
         print(f"compressing parameter to {path}")
         new_size = _nyacomp.compress(data, str(path))
+        time.sleep(1)
         if new_size < size:
             meta = {
                 "filename": str(path),
@@ -96,7 +98,7 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
 
 
 def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
-    dir = path.parent / "nya"
+    dir = path.absolute().parent / "nya"
 
     metadata = pickle.load(open(dir / "metadata.pkl", "rb"))
     assignments = metadata.pop()
@@ -131,6 +133,7 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     first_sizes = [real_meta[bin[0]]["decompressed_size"] for bin in assignments]
     size = sum(min(math.ceil(s / chunk_size), 4) * chunk_size for s in first_sizes)
     os.environ["TOTAL_FILE_SIZE"] = str(size)
+    json.dump({"meta": real_meta, "assignments": assignments, "size": size}, open("/tmp/init.json", "w"))
 
     # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress(files, assignments)
@@ -159,7 +162,7 @@ def stats(times: list[int|float]) -> str:
     return " ".join(f"{k}: {round(v, 4)}" for k, v in stats.items())
 
 if __name__ == "__main__":
-    COMPRESS = False
+    COMPRESS = os.getenv("COMPRESS")
     model_path = Path("./data/boneless_clip.pth")
     if COMPRESS:
         # import transformers
@@ -173,3 +176,15 @@ if __name__ == "__main__":
         model = load_compressed(model_path)
 
 
+
+# memory use:
+# O(1) pinned host memory and reads
+# ~O(n) compressed size (max is memory ready or used by simultanious decompressions at a given point in time)
+# O(n) decompressed tensors
+#
+# we can try to solve for low max bandwidth by packing items more closely in time, less bandwidth with higher utilisation
+# have every thread finish at the same time even if it means more memory used as long as its under the memory makespan
+# 
+
+
+# we could try using torch's memory allocator

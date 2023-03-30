@@ -37,7 +37,8 @@ namespace py = pybind11;
 
 
 int getenv(const char* name, int default_value) {
-  return std::getenv(name) ? std::stoi(std::getenv(name)) : default_value;
+  auto value = std::getenv(name);
+  return value ? std::stoi(value) : default_value;
 }
 
 const bool DEBUG = getenv("DEBUG", 0);
@@ -450,7 +451,6 @@ std::vector<torch::Tensor> batch_decompress(
 
   std::vector<std::future<std::pair<ms_t, ms_t>>> futures;
   std::vector<torch::Tensor> tensors(num_files);
-
 
   // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#features-and-technical-specifications__technical-specifications-per-compute-capability
   // ampere: 128 concurrent kernels ... (3090, A30, etc are 8.6). v100 is 7.0, but still 128

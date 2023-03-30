@@ -167,6 +167,13 @@ def good_load(path: str) -> dict:
 
     keys = [k for k, v in state_dict.items() if isinstance(v, dict)]
     keys.sort(key=lambda k: state_dict[k]["len"], reverse=True)
+    real_meta =[[
+            f"{dir / k}.gz",
+            list(state_dict[k]["shape"]),
+            str(state_dict[k]["dtype"]).removeprefix("torch."),
+            state_dict[k]["len"],]
+        for k in keys
+    ] 
     files = [
         _nyacomp.CompressedFile(
             f"{dir / k}.gz",
@@ -195,6 +202,9 @@ def good_load(path: str) -> dict:
     first_sizes = [state_dict[keys[bin[0]]]["len_compressed"] for bin in assignments]
     size = sum(min(math.ceil(s / chunk_size), 4) * chunk_size for s in first_sizes)
     os.environ["TOTAL_FILE_SIZE"] = str(size)
+
+    json.dump({"meta": real_meta, "assignments": assignments, "size": size}, open("/tmp/hf.json", "w"))
+
 
     # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
     tensors = _nyacomp.batch_decompress(files, assignments)
@@ -277,17 +287,17 @@ def with_cleanup(guy: str) -> None:
 if __name__ == "__main__":
     torch.cuda.synchronize()
     if os.getenv("PROF"):
-        toggle_transformers()
-        import transformers
-        with timer("from_pretrained"):
-            import pdb
-            pdb.set_trace()
-            with annotate("from_pretrained", color="green"):
-                model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True, low_cpu_mem_usage=True, device_map="auto")
-        with annotate("to cuda"):
-            model.to("cuda")
+        # toggle_transformers()
+        # import transformers
+        # with timer("from_pretrained"):
+        #     import pdb
+        #     pdb.set_trace()
+        #     with annotate("from_pretrained", color="green"):
+        #         model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True, low_cpu_mem_usage=True, device_map="auto")
+        # with annotate("to cuda"):
+        #     model.to("cuda")
         import sys
-        #with_cleanup(guy)
+        with_cleanup(guy)
         sys.exit(0)
     os.environ["NAME"] = name = "run-" + str(int(time.time()))
     times = [
