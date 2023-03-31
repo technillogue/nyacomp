@@ -367,6 +367,8 @@ private:
   std::atomic<bool> is_ready;
 };
 
+
+
 struct CompressedFile {
   std::string filename;
   std::vector<int64_t> tensor_shape;
@@ -515,7 +517,9 @@ std::vector<torch::Tensor> batch_decompress(
 
 
         // convert stream to hex string for logging
-        std::string stream_name = (std::ostringstream{} << "0x" << std::hex << stream).str();
+        std::ostringstream stream_hex;
+        stream_hex << "0x" << std::hex << stream;
+        std::string stream_name = stream_hex.str();
 
         total_decompressed_size += files[i].decompressed_size;
 

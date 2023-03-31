@@ -212,8 +212,8 @@ if __name__ == "__main__":
     if COMPRESS:
         with timer("from_pretrained"):
             if os.getenv("DIFFUSERS"):
-                import diffusers
-                model = diffusers.StableDiffusionPipeline("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", "safety_checker"=None, local_files_only=True)
+import diffusers
+model = diffusers.StableDiffusionPipeline("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", safety_checker=None, local_files_only=True)
             else:
                 import transformers
                 model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True)
