@@ -1,6 +1,29 @@
-import json
+import os
+import sys
+import importlib.abc
+import importlib.util
+
+if os.getenv("HIDE_MODULES"):
+    hidden = {"jax", "flax", "accelerate", "wandb"}
+
+    def find_spec(name, package=None):
+        if name in hidden:
+            return None
+        return orig_find_spec(name, package)
+
+    class CustomFinder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname, path, target=None):
+            if fullname in hidden:
+                raise ImportError(f"{fullname} is blocked and cannot be imported.")
+            return None
+
+    orig_find_spec = importlib.util.find_spec
+    importlib.util.find_spec = find_spec
+    sys.meta_path.insert(0, CustomFinder())
+
 import contextlib
 import ctypes
+import json
 import math
 import os
 import pickle
@@ -10,7 +33,7 @@ from typing import Iterator
 
 import numpy as np
 import partition
-import torch
+from nvtx import annotate
 
 import _nyacomp
 
@@ -20,6 +43,10 @@ def timer(msg: str) -> "Iterator[None]":
     start = time.time()
     yield
     print(f"{msg} took {time.time() - start:.3f}s")
+
+
+with timer("import torch"):
+    import torch
 
 
 def tensor_bytes(tensor: torch.Tensor) -> bytes:
@@ -100,10 +127,14 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
     pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb"))
     print("overall compression ratio:", total_compressed_size / total_size)
     print("saving boneless model to ", path)
+    import pdb
+
     torch.save(model, str(path))
+    pdb.set_trace()
     return total_compressed_size / total_size
 
 
+@annotate("load_compressed")
 def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     dir = path.absolute().parent / "nya"
 
@@ -145,14 +176,17 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     )
 
     # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
-    tensors = _nyacomp.batch_decompress(files, assignments)
+    with annotate("batch_decompress"):
+        tensors = _nyacomp.batch_decompress(files, assignments)
     if None in tensors:
         import pdb
 
         pdb.set_trace()
 
     tensors_iter = iter(tensors)
-    model = torch.load(path, map_location="cuda:0")
+    with timer("torch.load"):
+        with annotate("torch.load"):
+            model = torch.load(path, map_location="cuda:0")
     for param, meta in zip(model.parameters(), metadata):
         if meta:
             param.data = next(tensors_iter)
@@ -171,17 +205,24 @@ def stats(times: list[int | float]) -> str:
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
 
 
+
 if __name__ == "__main__":
     COMPRESS = os.getenv("COMPRESS")
-    model_path = Path("./data/boneless_clip.pth")
+    model_path = Path("./data/boneless_model.pth")
     if COMPRESS:
-        # import transformers
-        # with timer("from_pretrained"):
-        #     model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True)
-        model = torch.load("/tmp/clip.pth", map_location="cpu")
+        with timer("from_pretrained"):
+            if os.getenv("DIFFUSERS"):
+                import diffusers
+                model = diffusers.StableDiffusionPipeline("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", "safety_checker"=None, local_files_only=True)
+            else:
+                import transformers
+                model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True)
+        # model = torch.load("/tmp/clip.pth", map_location="cpu")
         compress(model, model_path)
         del model
         torch.cuda.memory.empty_cache()
+    # with timer("import transformers"):
+    #     import transformers
     with timer("load_compressed"):
         model = load_compressed(model_path)
 

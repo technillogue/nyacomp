@@ -4,6 +4,7 @@
 // #include "nvcomp/cascaded.hpp"
 // #include "nvcomp/bitcomp.hpp"
 // #include "nvcomp/lz4.hpp"
+// #include "nvToolsExt.h"
 #include "nvcomp.hpp"
 #include "nvcomp/nvcompManagerFactory.hpp"
 // #include "coz.h"
@@ -705,7 +706,7 @@ std::vector<torch::Tensor> batch_decompress(
 
       int throughput = std::round((float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
       log("thread " + std::to_string(thread_id) + " processed " + std::to_string(total_decompressed_size / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
-      std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)*1000));
+      // std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)*1000));
 
       // if (PINNED) CUDA_CHECK(cudaFreeHost(host_compressed_data));
       // thread_managers[thread_id] = managers;
