@@ -1,7 +1,11 @@
 import os
+import gc
 import sys
 import importlib.abc
 import importlib.util
+
+os.environ["HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 if os.getenv("HIDE_MODULES"):
     hidden = {"jax", "flax", "accelerate", "wandb"}
@@ -28,6 +32,7 @@ import math
 import os
 import pickle
 import time
+import timeit
 from pathlib import Path
 from typing import Iterator
 
@@ -36,6 +41,11 @@ import partition
 from nvtx import annotate
 
 import _nyacomp
+
+try:
+    from humanize.filesize import naturalsize as natsize
+except ImportError
+    natsize = lambda size: size
 
 
 @contextlib.contextmanager
@@ -193,6 +203,19 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
 
     return model
 
+def with_cleanup(path):
+    prev_size = torch.cuda.memory.memory_reserved()
+    model = load_compressed(path)
+    del model
+    gc.collect()
+    used_size  = torch.cuda.memory.memory_reserved()
+    torch.cuda.memory.empty_cache()
+    freed_size  = torch.cuda.memory.memory_reserved()
+    print("previous torch mem", prev_size, "used mem", natsize(used_size), "mem after clearing cache", freed_size)
+    if torch.cuda.memory.memory_reserved() > prev_size:
+        import pdb
+        pdb.set_trace()
+
 
 def stats(times: list[int | float]) -> str:
     import statistics
@@ -208,12 +231,15 @@ def stats(times: list[int | float]) -> str:
 
 if __name__ == "__main__":
     COMPRESS = os.getenv("COMPRESS")
-    model_path = Path("./data/boneless_model.pth")
+    if os.getenv("PROD"):
+        model_path = Path("./data/boneless_model.pth")
+    else:
+        model_path = Path("./data/boneless_clip.pth")
     if COMPRESS:
         with timer("from_pretrained"):
-            if os.getenv("DIFFUSERS"):
-import diffusers
-model = diffusers.StableDiffusionPipeline("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", safety_checker=None, local_files_only=True)
+            if os.getenv("DIFFUSERS") or os.getenv("PROD"):
+                import diffusers
+                model = diffusers.StableDiffusionPipeline("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", safety_checker=None, local_files_only=True)
             else:
                 import transformers
                 model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True)
@@ -223,8 +249,23 @@ model = diffusers.StableDiffusionPipeline("CompVis/stable-diffusion-v1-4", torch
         torch.cuda.memory.empty_cache()
     # with timer("import transformers"):
     #     import transformers
-    with timer("load_compressed"):
-        model = load_compressed(model_path)
+    if os.getenv("PROF"):
+        with_cleanup(model_path)
+        sys.exit(0)
+    os.environ["NAME"] = name = "run-" + str(int(time.time()))
+    times = [
+        timeit.timeit("with_cleanup(model_path)", number=1, globals=globals()) for i in range(5)
+    ]
+    runs = [run for run in map(json.loads, open("/tmp/stats.json")) if run.get("name") == name]
+    print(os.environ["NAME"], " load_compressed: ", stats(times))
+    processing = [run["elapsed_time"] for run in runs]
+    print("inner processing: ", stats(processing))
+    copy_time = [run["total_copy_time"] for run in runs]
+    print("copy: ", stats(copy_time))
+    decomp_time = [run["total_decomp_time"] for run in runs]
+    print("decomp: ", stats(decomp_time))
+    read_time = [run["total_read_time"] for run in runs]
+    print("read: ", stats(read_time))
 
 
 # memory use:
