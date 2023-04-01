@@ -44,7 +44,7 @@ import _nyacomp
 
 try:
     from humanize.filesize import naturalsize as natsize
-except ImportError
+except ImportError:
     natsize = lambda size: size
 
 
@@ -107,8 +107,11 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
     if isinstance(model, torch.nn.Module):
         # parameters = list(model.named_parameters()))
         parameters = list(model.parameters())
-    else:
+    elif isinstance(model, dict):
         parameters = list(sorted(model.items()))
+    else:
+        parameters = get_pipeline_params(model)
+        # pipeline
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
@@ -142,6 +145,23 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
     torch.save(model, str(path))
     pdb.set_trace()
     return total_compressed_size / total_size
+
+
+def get_pipeline_params(
+    pipeline: "diffusers.DiffusionPipeline",
+) -> list["torch.nn.Module"]:
+    exclude = {"_class_name", "_diffusers_version", "_module"}
+    sub_models = [
+        getattr(self, pipeline_component_name)
+        for pipeline_component_name in pipeline.config.keys()
+        if pipeline_component_name not in exclude
+    ]
+    return [
+        param
+        for sub_model in sub_models
+        if sub_model
+        for param in sub_model.parameters()
+    ]
 
 
 @annotate("load_compressed")
@@ -197,23 +217,36 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     with timer("torch.load"):
         with annotate("torch.load"):
             model = torch.load(path, map_location="cuda:0")
-    for param, meta in zip(model.parameters(), metadata):
+    if isinstance(model, torch.nn.Module):
+        params = model.parameters()
+    else:
+        params = get_pipeline_params(model)
+    for param, meta in zip(params, metadata):
         if meta:
             param.data = next(tensors_iter)
 
     return model
+
 
 def with_cleanup(path):
     prev_size = torch.cuda.memory.memory_reserved()
     model = load_compressed(path)
     del model
     gc.collect()
-    used_size  = torch.cuda.memory.memory_reserved()
+    used_size = torch.cuda.memory.memory_reserved()
     torch.cuda.memory.empty_cache()
-    freed_size  = torch.cuda.memory.memory_reserved()
-    print("previous torch mem", prev_size, "used mem", natsize(used_size), "mem after clearing cache", freed_size)
+    freed_size = torch.cuda.memory.memory_reserved()
+    print(
+        "previous torch mem",
+        prev_size,
+        "used mem",
+        natsize(used_size),
+        "mem after clearing cache",
+        freed_size,
+    )
     if torch.cuda.memory.memory_reserved() > prev_size:
         import pdb
+
         pdb.set_trace()
 
 
@@ -228,21 +261,30 @@ def stats(times: list[int | float]) -> str:
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
 
 
-
 if __name__ == "__main__":
     COMPRESS = os.getenv("COMPRESS")
-    if os.getenv("PROD"):
+    if os.getenv("ENV") == "PROD":
         model_path = Path("./data/boneless_model.pth")
     else:
         model_path = Path("./data/boneless_clip.pth")
     if COMPRESS:
         with timer("from_pretrained"):
-            if os.getenv("DIFFUSERS") or os.getenv("PROD"):
+            if os.getenv("DIFFUSERS") or os.getenv("ENV") == "PROD":
                 import diffusers
-                model = diffusers.StableDiffusionPipeline("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", safety_checker=None, local_files_only=True)
+
+                model = diffusers.StableDiffusionPipeline.from_pretrained(
+                    "CompVis/stable-diffusion-v1-4",
+                    torch_dtype=torch.float16,
+                    revision="fp16",
+                    safety_checker=None,
+                    local_files_only=True,
+                )
             else:
                 import transformers
-                model = transformers.CLIPModel.from_pretrained("openai/clip-vit-large-patch14", local_files_only=True)
+
+                model = transformers.CLIPModel.from_pretrained(
+                    "openai/clip-vit-large-patch14", local_files_only=True
+                )
         # model = torch.load("/tmp/clip.pth", map_location="cpu")
         compress(model, model_path)
         del model
@@ -254,9 +296,14 @@ if __name__ == "__main__":
         sys.exit(0)
     os.environ["NAME"] = name = "run-" + str(int(time.time()))
     times = [
-        timeit.timeit("with_cleanup(model_path)", number=1, globals=globals()) for i in range(5)
+        timeit.timeit("with_cleanup(model_path)", number=1, globals=globals())
+        for i in range(5)
     ]
-    runs = [run for run in map(json.loads, open("/tmp/stats.json")) if run.get("name") == name]
+    runs = [
+        run
+        for run in map(json.loads, open("/tmp/stats.json"))
+        if run.get("name") == name
+    ]
     print(os.environ["NAME"], " load_compressed: ", stats(times))
     processing = [run["elapsed_time"] for run in runs]
     print("inner processing: ", stats(processing))

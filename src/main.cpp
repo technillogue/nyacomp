@@ -438,7 +438,7 @@ private:
 
 using ms_t = std::chrono::milliseconds;
 
-bool PINNED = getenv("PINNED", 0);
+// bool PINNED = getenv("PINNED", 0);
 
 size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
 int TENSOR_EARLY = getenv("TENSOR_EARLY", 0);
