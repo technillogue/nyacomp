@@ -149,8 +149,8 @@ def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
         indx[size].append(i)
 
     ordered = sorted(sizes, reverse=True)
-    bins = greedy_partition(sizes, n_bins)
-    #bins = multiway_partition(sizes, n_bins)
+    #bins = greedy_partition(sizes, n_bins)
+    bins = multiway_partition(sizes, n_bins)
     assert sum(map(len, bins)) == len(sizes), "wrong"
 
     result = [[indx[size].pop(0) for size in bin] for bin in bins]

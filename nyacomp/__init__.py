@@ -152,14 +152,14 @@ def get_pipeline_params(
 ) -> list["torch.nn.Module"]:
     exclude = {"_class_name", "_diffusers_version", "_module"}
     sub_models = [
-        getattr(self, pipeline_component_name)
+        getattr(pipeline, pipeline_component_name)
         for pipeline_component_name in pipeline.config.keys()
         if pipeline_component_name not in exclude
     ]
     return [
         param
         for sub_model in sub_models
-        if sub_model
+        if sub_model and isinstance(sub_model, torch.nn.Module)
         for param in sub_model.parameters()
     ]
 
@@ -206,24 +206,26 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     )
 
     # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
-    with annotate("batch_decompress"):
-        tensors = _nyacomp.batch_decompress(files, assignments)
+    with timer("batch_decompress"):
+        with annotate("batch_decompress"):
+            tensors = _nyacomp.batch_decompress(files, assignments)
     if None in tensors:
         import pdb
 
         pdb.set_trace()
 
     tensors_iter = iter(tensors)
-    with timer("torch.load"):
+    with timer("boneless torch.load"):
         with annotate("torch.load"):
             model = torch.load(path, map_location="cuda:0")
-    if isinstance(model, torch.nn.Module):
-        params = model.parameters()
-    else:
-        params = get_pipeline_params(model)
-    for param, meta in zip(params, metadata):
-        if meta:
-            param.data = next(tensors_iter)
+    with timer("setting params"):
+        if isinstance(model, torch.nn.Module):
+            params = model.parameters()
+        else:
+            params = get_pipeline_params(model)
+        for param, meta in zip(params, metadata):
+            if meta:
+                param.data = next(tensors_iter)
 
     return model
 
@@ -287,12 +289,20 @@ if __name__ == "__main__":
                 )
         # model = torch.load("/tmp/clip.pth", map_location="cpu")
         compress(model, model_path)
+        torch.save(model, "/tmp/model.pth")
         del model
         torch.cuda.memory.empty_cache()
     # with timer("import transformers"):
     #     import transformers
     if os.getenv("PROF"):
-        with_cleanup(model_path)
+        if os.getenv("GOOD"):
+            with timer("load_compressed"):
+                with_cleanup(model_path)
+        if os.getenv("TORCH"):
+            with timer("torch.load"):
+                # import diffusers
+                # model = diffusers.StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", safety_checker=None, local_files_only=True)
+                torch.load("/tmp/model.pth", map_location="cuda:0")
         sys.exit(0)
     os.environ["NAME"] = name = "run-" + str(int(time.time()))
     times = [
