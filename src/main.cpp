@@ -396,6 +396,46 @@ struct CompressedFile {
 };
 
 
+std::vector<int64_t> parse_ints(const std::string& str) {
+  std::vector<int64_t> result;
+  std::stringstream ss(str);
+  std::string dim;
+  while (std::getline(ss, dim, ';'))
+    result.push_back(std::stoll(dim));
+  return result;
+}
+
+
+std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(std::string fname) {
+  // filename,tensor_shape,dtype,decompressed_size; for example,
+  // 1.gz,224;224,float32,50176
+  auto file = std::ifstream(fname);
+  std::string line;
+  std::vector<std::vector<int>> thread_to_idx;
+  {
+    // the first line is the thread assignments
+    std::getline(file, line);
+    std::stringstream ss(line);
+    std::string thread_str;
+    while (std::getline(ss, thread_str, ',')) {
+      auto idx = parse_ints(thread_str);
+      thread_to_idx.push_back(std::vector<int>(idx.begin(), idx.end()));
+    }
+  }
+  std::vector<CompressedFile> files;
+  while (std::getline(file, line)) {
+    std::stringstream ss(line);
+    std::string filename, tensor_shape_str, dim, dtype;
+    std::getline(ss, filename, ',');
+    std::getline(ss, tensor_shape_str, ',');
+    std::vector<int64_t> tensor_shape = parse_ints(tensor_shape_str);
+    std::getline(ss, dtype, ',');
+    size_t decompressed_size = std::stoull(ss.str());
+    files.emplace_back(filename, tensor_shape, dtype, decompressed_size);
+  }
+  return std::make_pair(thread_to_idx, files);
+}
+
 
 // struct DeviceBuffer {
 //   uint8_t* data;
@@ -440,6 +480,8 @@ using ms_t = std::chrono::milliseconds;
 
 // bool PINNED = getenv("PINNED", 0);
 
+int NUM_THREADS = getenv("NUM_THREADS", std::thread::hardware_concurrency());
+
 size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
 int TENSOR_EARLY = getenv("TENSOR_EARLY", 0);
 int SYNC_DECOMPRESS = getenv("SYNC_DECOMPRESS", 0);
@@ -469,7 +511,7 @@ std::vector<torch::Tensor> batch_decompress(
 
 
   int num_files = static_cast<int>(files.size());
-  int num_threads = std::min(num_files, getenv("NUM_THREADS", static_cast<int>(std::thread::hardware_concurrency())));
+  int num_threads = std::min(num_files, NUM_THREADS);
 
   if (thread_to_idx.size() != (size_t)num_threads)
     throw std::invalid_argument("thread_to_idx.size() must be equal to NUM_THREADS, got " + std::to_string(thread_to_idx.size()) + " and " + std::to_string(num_threads));
@@ -557,7 +599,7 @@ std::vector<torch::Tensor> batch_decompress(
         if (file == nullptr)
           throw std::invalid_argument("Could not open file " + files[i].filename);
         input_buffer_len = lseek(fd, 0, SEEK_END);
-        if (input_buffer_len == -1)
+        if (input_buffer_len == (size_t)-1)
           throw std::invalid_argument("Could not seek to end of file " + files[i].filename);
         if (input_buffer_len == 0)
           throw std::invalid_argument("File " + files[i].filename + " is empty");
@@ -823,6 +865,46 @@ std::vector<torch::Tensor> batch_decompress(
   return tensors;
 }
 
+class AsyncDecompressor {
+private:
+  std::future<std::vector<torch::Tensor>> future;
+  
+public:
+  bool done = false;
+  bool failed = false;
+  std::string error;
+
+  AsyncDecompressor(std::string fname) {
+    std::vector<CompressedFile> files;
+    std::vector<std::vector<int>> thread_to_idx;
+    std::tie(thread_to_idx, files) = load_csv(fname);
+
+    size_t num_threads = std::min(static_cast<int>(files.size()), NUM_THREADS);
+    if (thread_to_idx.size() != num_threads) {
+      error = "thread_to_idx.size() must be equal to NUM_THREADS, got " + std::to_string(thread_to_idx.size()) + " and " + std::to_string(num_threads);
+      std::cerr << error << std::endl;
+      failed = true;
+    } else
+      future = std::async(std::launch::async, batch_decompress, files, thread_to_idx);
+  }
+
+  std::vector<torch::Tensor> get() {
+    if (failed) throw std::runtime_error(error);
+    if (done) throw std::runtime_error("get() called on a decompressor that is already done");
+    try {
+      auto tensors = future.get();
+      done = true;
+      return tensors;
+    } catch (const std::exception& e) {
+      failed = true;
+      error = e.what();
+      std::cerr << error << std::endl;
+      throw e;
+    }
+  }
+};
+
+
 // extern "C" {
 //   void fake_batch_decompress() {
 //     std::vector<std::string> filenames;
@@ -864,11 +946,15 @@ PYBIND11_MODULE(_nyacomp, m) {
 
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
-  //  py::call_guard<py::gil_scoped_release>()
-  m.def("batch_decompress", &batch_decompress, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
+  m.def("batch_decompress", &batch_decompress, "good decompress batch", py::arg("files"), py::arg("assignments"), py::call_guard<py::gil_scoped_release>());
+  // m.def("batch_decompress", &batch_decompress, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
 
   py::class_<CompressedFile>(m, "CompressedFile")
     .def(py::init<const std::string&, const std::vector<int64_t>&, const std::string&, const size_t>());
+
+  py::class_<AsyncDecompressor>(m, "AsyncDecompressor")
+    .def(py::init<const std::string&>(), py::call_guard<py::gil_scoped_release>())
+    .def("get", &AsyncDecompressor::get, py::call_guard<py::gil_scoped_release>());
 
 #ifdef VERSION_INFO
   m.attr("__version__") = MACRO_STRINGIFY(VERSION_INFO);

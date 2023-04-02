@@ -40,10 +40,13 @@ def multiway_partition(sizes: list[int], bins: int = 32, k=20) -> list[list[int]
             upper_bound_capcity = capacity
         else:
             lower_bound_capcity = capacity
-        if upper_bound_capcity - lower_bound_capcity < 10:
+        if upper_bound_capcity - lower_bound_capcity < 1:
             break
     solution = ffd_binpack(sizes, upper_bound_capcity)
-    # assert len(solution) == 32
+    if len(solution) < bins:
+        solution.extend([] for _ in range(bins - len(solution)))
+
+
     return solution
 
 
@@ -127,18 +130,17 @@ def greedy_partition(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
         bins[i].append(number)
         bin_sizes[i] += number
 
-    # move the smallest tensor from the largest thread with multiple tensors into any empty threads
-    while any(not b for b in bins):
-        biggest = sorted([bin for bin in bins if len(bin) > 2], key=sum)[-1]
-        empty = next(i for i, bin in enumerate(bins) if not bin)
-        moved = min(biggest)
-        biggest.remove(moved)
-        bins[empty].append(moved)
-        # for bin in bins:
-        #     for item in bin:
-        #         if item < moved and sum(bin) + item < max_len:
-        #             bin.remove(item)
-        #             empty.append
+    # while any(not b for b in bins):
+    #     biggest = sorted([bin for bin in bins if len(bin) > 2], key=sum)[-1]
+    #     empty = next(i for i, bin in enumerate(bins) if not bin)
+    #     moved = min(biggest)
+    #     biggest.remove(moved)
+    #     bins[empty].append(moved)
+    #     # for bin in bins:
+    #     #     for item in bin:
+    #     #         if item < moved and sum(bin) + item < max_len:
+    #     #             bin.remove(item)
+    #     #             empty.append
 
     return bins
 
@@ -150,8 +152,21 @@ def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
 
     ordered = sorted(sizes, reverse=True)
     #bins = greedy_partition(sizes, n_bins)
-    bins = multiway_partition(sizes, n_bins)
+    bins = multiway_partition(ordered, n_bins)
     assert sum(map(len, bins)) == len(sizes), "wrong"
+
+    # move the smallest tensor from the largest thread with multiple tensors into any empty threads
+    while any(not b for b in bins):
+        biggest = sorted([bin for bin in bins if len(bin) > 2], key=sum)[-1]
+        empty = next(i for i, bin in enumerate(bins) if not bin)
+        moved = min(biggest)
+        biggest.remove(moved)
+        bins[empty].append(moved)
+
+    for bin in bins:
+        biggest_file = max(bin)
+        bin.remove(biggest_file)
+        bin.insert(0, biggest_file)
 
     result = [[indx[size].pop(0) for size in bin] for bin in bins]
     for bin in indx.values():

@@ -1,5 +1,4 @@
 import os
-import gc
 import sys
 import importlib.abc
 import importlib.util
@@ -25,6 +24,8 @@ if os.getenv("HIDE_MODULES"):
     importlib.util.find_spec = find_spec
     sys.meta_path.insert(0, CustomFinder())
 
+import gc
+import threading
 import contextlib
 import ctypes
 import json
@@ -130,11 +131,6 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
     sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
     assignments = partition.massage(sizes, threads)
 
-    for bin in assignments:
-        biggest_file = max(bin, key=lambda idx: sizes[idx])
-        bin.remove(biggest_file)
-        bin.insert(0, biggest_file)
-
     meta.append(assignments)
 
     pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb"))
@@ -164,6 +160,17 @@ def get_pipeline_params(
     ]
 
 
+
+def simple_python_function():
+    with timer("simple_python_function"):
+        start = time.time()
+        for i in range(30):
+            time.sleep(0.1)
+            print(f"{i}th sleep took {time.time() - start:.4f}")
+            start = time.time()
+    return ""
+
+
 @annotate("load_compressed")
 def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     dir = path.absolute().parent / "nya"
@@ -191,11 +198,6 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
         sizes = tuple(meta["compressed_size"] for meta in real_meta)
         assignments = partition.massage(sizes, threads)
 
-    for bin in assignments:
-        biggest_file = max(bin, key=lambda idx: real_meta[idx]["compressed_size"])
-        bin.remove(biggest_file)
-        bin.insert(0, biggest_file)
-
     chunk_size = 1 << int(os.getenv("CHUNK_SIZE") or 20)
     first_sizes = [real_meta[bin[0]]["decompressed_size"] for bin in assignments]
     size = sum(min(math.ceil(s / chunk_size), 4) * chunk_size for s in first_sizes)
@@ -205,10 +207,14 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
         open("/tmp/init.json", "w"),
     )
 
-    # tensors = _nyacomp.good_batch_decompress(fnames, shapes, dtypes, -1, -1)
+    t1 = threading.Thread(target=simple_python_function)
+    t1.start()
+    print("started t1")
+    # tensors = _nyacomp.batch_decompress(fnames, shapes, dtypes, -1, -1)
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
             tensors = _nyacomp.batch_decompress(files, assignments)
+    t1.join()
     if None in tensors:
         import pdb
 
@@ -217,6 +223,7 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
     tensors_iter = iter(tensors)
     with timer("boneless torch.load"):
         with annotate("torch.load"):
+            print("loading")
             model = torch.load(path, map_location="cuda:0")
     with timer("setting params"):
         if isinstance(model, torch.nn.Module):
