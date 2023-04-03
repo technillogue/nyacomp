@@ -1,53 +1,31 @@
-import os
-import sys
 import importlib.abc
 import importlib.util
+import os
+import sys
 
 os.environ["HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-if os.getenv("HIDE_MODULES"):
+if not os.getenv("NO_HIDE_MODULES"):
     hidden = {"jax", "flax", "accelerate", "wandb"}
 
-    def find_spec(name, package=None):
+    def find_spec(name: str, package: "Any" = None) -> "Any":
         if name in hidden:
             return None
         return orig_find_spec(name, package)
 
     class CustomFinder(importlib.abc.MetaPathFinder):
-        def find_spec(self, fullname, path, target=None):
+        def find_spec(self, fullname: str, path: str, target: "Any" = None) -> "Any":
             if fullname in hidden:
                 raise ImportError(f"{fullname} is blocked and cannot be imported.")
-            return None
 
     orig_find_spec = importlib.util.find_spec
     importlib.util.find_spec = find_spec
     sys.meta_path.insert(0, CustomFinder())
 
-import gc
-import threading
-import contextlib
-import ctypes
-import json
-import math
-import os
-import pickle
-import time
-import timeit
-from pathlib import Path
-from typing import Iterator
-
-import numpy as np
-import partition
-from nvtx import annotate
-
 import _nyacomp
-
-try:
-    from humanize.filesize import naturalsize as natsize
-except ImportError:
-    natsize = lambda size: size
-
+import contextlib
+import time
 
 @contextlib.contextmanager
 def timer(msg: str) -> "Iterator[None]":
@@ -56,11 +34,39 @@ def timer(msg: str) -> "Iterator[None]":
     print(f"{msg} took {time.time() - start:.3f}s")
 
 
-with timer("import torch"):
-    import torch
+
+if not os.getenv("NO_PRELOAD"):
+    with timer("proceeding with importing; launching decompression took"):
+        decompressor = _nyacomp.AsyncDecompressor("data/nya/meta.csv")
+else:
+    decompressor = None
 
 
-def tensor_bytes(tensor: torch.Tensor) -> bytes:
+
+with timer("stdlib imports"):
+    import ctypes
+    import gc
+    import json
+    import math
+    import pickle
+    import threading
+    import timeit
+    from pathlib import Path
+    from typing import Iterator, Union
+
+with timer("numpy, nvtx"):
+    import numpy as np
+    import partition
+    from nvtx import annotate
+
+
+try:
+    from humanize.filesize import naturalsize as natsize
+except ImportError:
+    natsize = lambda size: size
+
+
+def tensor_bytes(tensor: "torch.Tensor") -> bytes:
     length = int(np.prod(tensor.shape).item())
     bytes_per_item = torch._utils._element_size(tensor.dtype)
 
@@ -72,13 +78,13 @@ def tensor_bytes(tensor: torch.Tensor) -> bytes:
     return data.tobytes()
 
 
-Tensory = torch.Tensor | torch.nn.Parameter
+Tensory = Union["torch.Tensor", "torch.nn.Parameter"]
 
 
 def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
     size = len(data)
-    if len(data) >= 1 << 14:  # 4 KB
+    if len(data) >= 1 << 1:  # 4 KB #nvm
         if path.exists() and not os.getenv("RECOMPRESS"):
             print(f"skipping already existing parameter at {path}")
             new_size = path.stat().st_size
@@ -104,12 +110,28 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
 default_path = Path("./boneless_model.pth")
 
 
-def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
+def ints(i: list[int]) -> str:
+    return ";".join(map(str, i))
+
+
+def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
+    ass = ",".join(map(ints, bins))
+    info = [
+        [m["filename"], ints(m["shape"]), m["dtype"], str(m["decompressed_size"])]
+        for m in meta
+        if m
+    ]
+    lines = list(map(" ".join, info))
+    open(f, "w").write("\n".join([ass] + lines))
+
+Compressable = Union["torch.nn.Module", dict]
+
+def compress(model: Compressable, path: Path = default_path) -> float:
     if isinstance(model, torch.nn.Module):
         # parameters = list(model.named_parameters()))
         parameters = list(model.parameters())
     elif isinstance(model, dict):
-        parameters = list(sorted(model.items()))
+        parameters = list(sorted(model.values()))
     else:
         parameters = get_pipeline_params(model)
         # pipeline
@@ -131,21 +153,20 @@ def compress(model: torch.nn.Module | dict, path: Path = default_path) -> float:
     sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
     assignments = partition.massage(sizes, threads)
 
+    to_csv(meta, assignments, str(dir / "meta.csv"))
     meta.append(assignments)
 
     pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb"))
     print("overall compression ratio:", total_compressed_size / total_size)
     print("saving boneless model to ", path)
-    import pdb
 
     torch.save(model, str(path))
-    pdb.set_trace()
     return total_compressed_size / total_size
 
 
 def get_pipeline_params(
     pipeline: "diffusers.DiffusionPipeline",
-) -> list["torch.nn.Module"]:
+) -> list["torch.nn.Parameter"]:
     exclude = {"_class_name", "_diffusers_version", "_module"}
     sub_models = [
         getattr(pipeline, pipeline_component_name)
@@ -160,21 +181,8 @@ def get_pipeline_params(
     ]
 
 
-
-def simple_python_function():
-    with timer("simple_python_function"):
-        start = time.time()
-        for i in range(30):
-            time.sleep(0.1)
-            print(f"{i}th sleep took {time.time() - start:.4f}")
-            start = time.time()
-    return ""
-
-
-@annotate("load_compressed")
-def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
+def get_args(path: Path) -> tuple[list[_nyacomp.CompressedFile], list[list[int]]]:
     dir = path.absolute().parent / "nya"
-
     metadata = pickle.load(open(dir / "metadata.pkl", "rb"))
     assignments = metadata.pop()
 
@@ -206,33 +214,53 @@ def load_compressed(path: Path = default_path) -> torch.nn.Module | dict:
         {"meta": real_meta, "assignments": assignments, "size": size},
         open("/tmp/init.json", "w"),
     )
+    return files, assignments
 
-    t1 = threading.Thread(target=simple_python_function)
-    t1.start()
-    print("started t1")
-    # tensors = _nyacomp.batch_decompress(fnames, shapes, dtypes, -1, -1)
+
+def get_tensors(path: Path) -> list["torch.Tensor"]:
+    if decompressor:
+        try:
+            with timer("decompressor.get"):
+                tensors = decompressor.get()
+            return tensors
+        except (RuntimeError, ValueError) as e:
+            print("decompressor.get errored: {e}")
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
+            files, assignments = get_args(path)
             tensors = _nyacomp.batch_decompress(files, assignments)
-    t1.join()
+    return tensors
+
+
+@annotate("load_compressed")
+def load_compressed(path: Path = default_path) -> Compressable:
+    print("started load_compressed")
+    with timer("import diffusers"):
+        import transformers
+    with timer("boneless torch.load"):
+        with annotate("torch.load"):
+            print("boneless torch.load")
+            model = torch.load(path) #, map_location="cuda:0")
+
+    with timer("load tensors"):
+        tensors = get_tensors(path)
     if None in tensors:
         import pdb
 
         pdb.set_trace()
 
     tensors_iter = iter(tensors)
-    with timer("boneless torch.load"):
-        with annotate("torch.load"):
-            print("loading")
-            model = torch.load(path, map_location="cuda:0")
+    empty_size = torch.Size([0])
     with timer("setting params"):
         if isinstance(model, torch.nn.Module):
             params = model.parameters()
         else:
             params = get_pipeline_params(model)
-        for param, meta in zip(params, metadata):
-            if meta:
+        for param in params:
+            if param.data.size() == empty_size:
                 param.data = next(tensors_iter)
+
+    assert next(tensors_iter, None) is None, "used tensors remaining"
 
     return model
 
@@ -269,6 +297,8 @@ def stats(times: list[int | float]) -> str:
     }
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
 
+with timer("import torch"):
+    import torch
 
 if __name__ == "__main__":
     COMPRESS = os.getenv("COMPRESS")

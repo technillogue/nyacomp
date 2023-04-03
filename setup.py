@@ -50,6 +50,7 @@ ext_modules = [
             "/usr/local/cuda/lib64",
         ],
         # extra_link_args=["-o./nya_exec"]
+        # extra_compile_args=["-fvisibility=hidden"]
     ),
 ]
 

@@ -425,12 +425,10 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(s
   std::vector<CompressedFile> files;
   while (std::getline(file, line)) {
     std::stringstream ss(line);
-    std::string filename, tensor_shape_str, dim, dtype;
-    std::getline(ss, filename, ',');
-    std::getline(ss, tensor_shape_str, ',');
+    std::string filename, tensor_shape_str, dtype, size;
+    ss >> filename >> tensor_shape_str >> dtype >> size;
     std::vector<int64_t> tensor_shape = parse_ints(tensor_shape_str);
-    std::getline(ss, dtype, ',');
-    size_t decompressed_size = std::stoull(ss.str());
+    size_t decompressed_size = std::stoull(size);
     files.emplace_back(filename, tensor_shape, dtype, decompressed_size);
   }
   return std::make_pair(thread_to_idx, files);
@@ -536,6 +534,7 @@ std::vector<torch::Tensor> batch_decompress(
 
   // initialize the primary context 
   CUDA_CHECK(cudaSetDevice(0));
+  debug("cudaSetDevice, initialized primary context");
 
   // size_t total_file_size = getenv("TOTAL_FILE_SIZE", 0);
   // assert(total_file_size > 0);
@@ -662,6 +661,8 @@ std::vector<torch::Tensor> batch_decompress(
           std::vector<uint8_t*> host_buffers(num_buffers);
           for (int i = 0; i < num_buffers; i++)
             host_buffers[i] = host_compressed_data + i * CHUNK_SIZE;
+
+          std::chrono::microseconds sync_time(0);
           
           int buffer_id = 0;
           while (already_read < input_buffer_len) {
@@ -675,7 +676,8 @@ std::vector<torch::Tensor> batch_decompress(
             } else {
               auto start = std::chrono::steady_clock::now();
               CUDA_CHECK(cudaEventSynchronize(circle_done_events[buffer_id])); // wait for previous copy to finish before changing host_compressed_data
-              log(prefix + "before using next buffer " + std::to_string(buffer_id) + ", waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
+              sync_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
+              // debug(prefix + "before using next buffer " + std::to_string(buffer_id) + ", waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
             }
             // if (!file->read(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read))
             auto start = std::chrono::steady_clock::now();
@@ -691,6 +693,7 @@ std::vector<torch::Tensor> batch_decompress(
             CUDA_CHECK(cudaEventRecord(circle_done_events[buffer_id], stream));
           }
           thread_copy_done[thread_id] = circle_done_events[buffer_id];
+          log(prefix + "took " + pprint(sync_time) + " to sync " + std::to_string(chunks) + " chunks");
         } else {
         host_compressed_data = file_loader->get_buffer(input_buffer_len, thread_id);
         while (already_read < input_buffer_len) {
@@ -878,17 +881,21 @@ public:
     std::vector<CompressedFile> files;
     std::vector<std::vector<int>> thread_to_idx;
     std::tie(thread_to_idx, files) = load_csv(fname);
+    // do some more validation
 
     size_t num_threads = std::min(static_cast<int>(files.size()), NUM_THREADS);
     if (thread_to_idx.size() != num_threads) {
       error = "thread_to_idx.size() must be equal to NUM_THREADS, got " + std::to_string(thread_to_idx.size()) + " and " + std::to_string(num_threads);
       std::cerr << error << std::endl;
-      failed = true;
-    } else
+      failed = true; 
+    } else{
+      log("starting batch_decompress future");
       future = std::async(std::launch::async, batch_decompress, files, thread_to_idx);
+    }
   }
 
   std::vector<torch::Tensor> get() {
+    log("called AsyncDecompressor::get()");
     if (failed) throw std::runtime_error(error);
     if (done) throw std::runtime_error("get() called on a decompressor that is already done");
     try {
@@ -901,6 +908,10 @@ public:
       std::cerr << error << std::endl;
       throw e;
     }
+  }
+
+  ~AsyncDecompressor() {
+    log("called AsyncDecompressor destructor");
   }
 };
 
