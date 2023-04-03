@@ -39,7 +39,7 @@ namespace py = pybind11;
 
 int getenv(const char* name, int default_value) {
   auto value = std::getenv(name);
-  return value ? std::stoi(value) : default_value;
+  return (value || value == "") ? std::stoi(value) : default_value;
 }
 
 const bool DEBUG = getenv("DEBUG", 0);

@@ -21,7 +21,7 @@ def ffd_binpack(sizes: list[int], capacity: int) -> list[list[int]]:
         possible_inserts = (
             i for i, size in enumerate(bin_sizes) if size + number <= capacity
         )
-        if insert := next(possible_inserts, None):
+        if insert := next(possible_inserts, None) is not None:
             bins[insert].append(number)
             bin_sizes[insert] += number
         else:
@@ -30,19 +30,19 @@ def ffd_binpack(sizes: list[int], capacity: int) -> list[list[int]]:
     return bins
 
 
-def multiway_partition(sizes: list[int], bins: int = 32, k=20) -> list[list[int]]:
-    lower_bound_capcity = int(max(sum(sizes) / len(sizes), max(sizes)))
-    upper_bound_capcity = max(2 * sum(sizes) / len(sizes), max(sizes))
+def multifit_partition(sizes: list[int], bins: int = 32, k=20) -> list[list[int]]:
+    lower_bound_capacity = int(max(sum(sizes) / bins, max(sizes)))
+    upper_bound_capacity = max(2 * sum(sizes) / bins, max(sizes))
     for i in range(k):
-        capacity = round((upper_bound_capcity + lower_bound_capcity) / 2)
+        capacity = round((upper_bound_capacity + lower_bound_capacity) / 2)
         solution = ffd_binpack(sizes, capacity)
         if len(solution) <= bins:
-            upper_bound_capcity = capacity
+            upper_bound_capacity = capacity
         else:
-            lower_bound_capcity = capacity
-        if upper_bound_capcity - lower_bound_capcity < 1:
+            lower_bound_capacity = capacity
+        if upper_bound_capacity - lower_bound_capacity < 1:
             break
-    solution = ffd_binpack(sizes, upper_bound_capcity)
+    solution = ffd_binpack(sizes, upper_bound_capacity)
     if len(solution) < bins:
         solution.extend([] for _ in range(bins - len(solution)))
 
@@ -152,7 +152,7 @@ def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
 
     ordered = sorted(sizes, reverse=True)
     #bins = greedy_partition(sizes, n_bins)
-    bins = multiway_partition(ordered, n_bins)
+    bins = multifit_partition(ordered, n_bins)
     assert sum(map(len, bins)) == len(sizes), "wrong"
 
     # move the smallest tensor from the largest thread with multiple tensors into any empty threads

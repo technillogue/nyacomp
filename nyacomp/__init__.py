@@ -52,11 +52,24 @@ with timer("stdlib imports"):
     import timeit
     from pathlib import Path
     from typing import Iterator, Union
-
-with timer("nvtx,partition"):
     import partition
-    from nvtx import annotate
 
+try:
+    with timer("nvtx,partition"):
+        from nvtx import annotate
+except ImportError:
+    class annotate:
+        def __init__(self, _: str) -> None:
+            pass
+
+        def __enter__(self, *args: "Any", **kwargs: "Any") -> "Any":
+            pass
+
+        def __exit__(self, *args: "Any", **kwargs: "Any") -> "Any":
+            pass
+
+        def __call__(self, func: "Any") -> "Any":
+            return func
 
 try:
     from humanize.filesize import naturalsize as natsize
@@ -222,7 +235,7 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
                 tensors = decompressor.get()
             return tensors
         except (RuntimeError, ValueError) as e:
-            print("decompressor.get errored: {e}")
+            print(f"decompressor.get errored: {e}")
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
             files, assignments = get_args(path)
@@ -233,12 +246,15 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
 @annotate("load_compressed")
 def load_compressed(path: Path = default_path) -> Compressable:
     print("started load_compressed")
-    with timer("import diffusers"):
-        import transformers
+    with timer("import huggingface lib"):
+        if os.getenv("ENV") == "PROD":
+            import diffusers
+        else:
+            import transformers
     with timer("boneless torch.load"):
         with annotate("torch.load"):
             print("boneless torch.load")
-            model = torch.load(path) #, map_location="cuda:0")
+            model = torch.load(path, map_location="cuda:0")
 
     with timer("load tensors"):
         tensors = get_tensors(path)
