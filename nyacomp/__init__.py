@@ -23,7 +23,6 @@ if not os.getenv("NO_HIDE_MODULES"):
     importlib.util.find_spec = find_spec
     sys.meta_path.insert(0, CustomFinder())
 
-import _nyacomp
 import contextlib
 import time
 
@@ -33,14 +32,14 @@ def timer(msg: str) -> "Iterator[None]":
     yield
     print(f"{msg} took {time.time() - start:.3f}s")
 
-
+with timer("import _nyacomp"):
+    import _nyacomp
 
 if not os.getenv("NO_PRELOAD"):
     with timer("proceeding with importing; launching decompression took"):
         decompressor = _nyacomp.AsyncDecompressor("data/nya/meta.csv")
 else:
     decompressor = None
-
 
 
 with timer("stdlib imports"):
@@ -54,8 +53,7 @@ with timer("stdlib imports"):
     from pathlib import Path
     from typing import Iterator, Union
 
-with timer("numpy, nvtx"):
-    import numpy as np
+with timer("nvtx,partition"):
     import partition
     from nvtx import annotate
 
@@ -307,6 +305,8 @@ if __name__ == "__main__":
     else:
         model_path = Path("./data/boneless_clip.pth")
     if COMPRESS:
+        import numpy as np # for tensor_bytes
+
         with timer("from_pretrained"):
             if os.getenv("DIFFUSERS") or os.getenv("ENV") == "PROD":
                 import diffusers
@@ -324,9 +324,9 @@ if __name__ == "__main__":
                 model = transformers.CLIPModel.from_pretrained(
                     "openai/clip-vit-large-patch14", local_files_only=True
                 )
+        torch.save(model, "/tmp/model.pth")
         # model = torch.load("/tmp/clip.pth", map_location="cpu")
         compress(model, model_path)
-        torch.save(model, "/tmp/model.pth")
         del model
         torch.cuda.memory.empty_cache()
     # with timer("import transformers"):
