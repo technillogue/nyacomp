@@ -39,7 +39,8 @@ namespace py = pybind11;
 
 int getenv(const char* name, int default_value) {
   auto value = std::getenv(name);
-  return (value || value == "") ? std::stoi(value) : default_value;
+  // if value is null or "", return default otherwise convert to int
+  return (value == nullptr || value[0] == '\0') ? default_value : std::stoi(value);
 }
 
 const bool DEBUG = getenv("DEBUG", 0);
@@ -533,8 +534,10 @@ std::vector<torch::Tensor> batch_decompress(
   log("Using " + std::to_string(num_threads) + " threads and " + std::to_string(streams_per_thread) + " streams per thread for " + std::to_string(num_files) + " files");
 
   // initialize the primary context 
+
+  {auto start = std::chrono::steady_clock::now();
   CUDA_CHECK(cudaSetDevice(0));
-  debug("cudaSetDevice, initialized primary context");
+  debug("cudaSetDevice to initialize primary context took " + pprint(std::chrono::steady_clock::now() - start));}
 
   // size_t total_file_size = getenv("TOTAL_FILE_SIZE", 0);
   // assert(total_file_size > 0);

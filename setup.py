@@ -79,3 +79,4 @@ setup(
     },
     include_package_data=True,
 )
+# actually depends on torch (specific version of torch). optional: nvtx, humanize. also requires transformers or diffusers as appropriate
