@@ -38,13 +38,16 @@ LD_LIBRARY_PATH="/opt/_internal/cpython-3.10.9/lib/python3.10/site-packages/torc
 --exclude libtorch.so \
 dist/nyacomp-0.0.1-cp310-cp310-linux_x86_64.whl
 
+# better name:
+# nyacomp-0.0.1-cp310-manylinux2014_x86_64.whl
 mkdir -p wheelhouse/check
 cd wheelhouse/check || exit
 unzip -o ../nyacomp-0.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl _nyacomp.cpython-310-x86_64-linux-gnu.so
 patchelf --add-rpath '$ORIGIN/torch/lib' _nyacomp.cpython-310-x86_64-linux-gnu.so
 # this has to be kept in sync with the torch version
 patchelf --replace-needed libcudart.so.11.0 libcudart-a7b20f20.so.11.0  _nyacomp.cpython-310-x86_64-linux-gnu.so
-if [ -z "$RELEASE" ]; then
+# if building for release, strip debug symbols from each binary in nyacomp.libs
+if [[ "$1" == "release"]]; then
     unzip -o ../nyacomp-0.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl nyacomp.libs
     find . -name '*.so' | xargs strip --strip-debug
     zip -o ../nyacomp-0.0.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl nyacomp.libs

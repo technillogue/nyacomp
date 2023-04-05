@@ -55,8 +55,12 @@ with timer("stdlib imports"):
     from typing import Iterator, Union
     import partition
 
+# FIXME: make the entire annotate thing configurable
+# and integrate it with timer
+# just have loglevel  
+
 try:
-    with timer("nvtx,partition"):
+    with timer("nvtx"):
         from nvtx import annotate
 except ImportError:
     class annotate:
@@ -139,6 +143,9 @@ def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
 Compressable = Union["torch.nn.Module", dict]
 
 def compress(model: Compressable, path: Path = default_path) -> float:
+    import numpy as np
+    sys.modules[__name__].np = np # import here so tensor_bytes can find it
+
     if isinstance(model, torch.nn.Module):
         # parameters = list(model.named_parameters()))
         parameters = list(model.parameters())
@@ -179,6 +186,8 @@ def compress(model: Compressable, path: Path = default_path) -> float:
 def get_pipeline_params(
     pipeline: "diffusers.DiffusionPipeline",
 ) -> list["torch.nn.Parameter"]:
+    # https://github.com/huggingface/diffusers/blob/v0.7.0/src/diffusers/pipeline_utils.py#L174-L180
+    # https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/pipeline_utils.py#L493-L497
     exclude = {"_class_name", "_diffusers_version", "_module"}
     sub_models = [
         getattr(pipeline, pipeline_component_name)
@@ -322,8 +331,6 @@ if __name__ == "__main__":
     else:
         model_path = Path("./data/boneless_clip.pth")
     if COMPRESS:
-        import numpy as np # for tensor_bytes
-
         with timer("from_pretrained"):
             if os.getenv("DIFFUSERS") or os.getenv("ENV") == "PROD":
                 import diffusers
@@ -390,3 +397,7 @@ if __name__ == "__main__":
 
 
 # we could try using torch's memory allocator
+#
+#
+# it would be really nice to hook into persistent_load, replacing the unpickler in torch.load
+# unless smth diff with aitemplate

@@ -21,7 +21,7 @@ def ffd_binpack(sizes: list[int], capacity: int) -> list[list[int]]:
         possible_inserts = (
             i for i, size in enumerate(bin_sizes) if size + number <= capacity
         )
-        if insert := next(possible_inserts, None) is not None:
+        if (insert := next(possible_inserts, None)) is not None:
             bins[insert].append(number)
             bin_sizes[insert] += number
         else:
