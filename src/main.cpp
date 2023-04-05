@@ -481,7 +481,6 @@ size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
 int TENSOR_EARLY = getenv("TENSOR_EARLY", 0);
 int SYNC_DECOMPRESS = getenv("SYNC_DECOMPRESS", 0);
 int SYNC_FREE = getenv("SYNC_FREE", 0);
-int CIRCLE = getenv("CIRCLE", 1);
 int NUM_CIRCLE_BUFFERS = getenv("NUM_CIRCLE_BUFFERS", 4);
 
 int WILLNEED = getenv("WILLNEED", 0);
@@ -547,7 +546,7 @@ std::vector<torch::Tensor> batch_decompress(
     futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
       log("started thread " + std::to_string(thread_id));
       auto thread_start = std::chrono::steady_clock::now();
-      CUDA_CHECK(cudaSetDevice(0)); // this ... sets the context?
+      CUDA_CHECK(cudaSetDevice(0)); // this sets the cuda context
 
       std::chrono::microseconds thread_copy_time, thread_decomp_time = std::chrono::milliseconds::zero();
       std::chrono::nanoseconds thread_read_time = std::chrono::nanoseconds::zero();
@@ -625,7 +624,7 @@ std::vector<torch::Tensor> batch_decompress(
         std::string copy_message = "";
 
 
-        if (CIRCLE && i != 0 && job_number < UNPINNED_JOBS && thread_id > unpinned_threads) {
+        if (i != 0 && job_number < UNPINNED_JOBS && thread_id > unpinned_threads) {
           auto start = std::chrono::steady_clock::now();
           std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
           thread_read_time += (std::chrono::steady_clock::now() - start);
@@ -633,7 +632,7 @@ std::vector<torch::Tensor> batch_decompress(
           copy_message = "unpinned ";
           // log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
         }
-        else if (CIRCLE) {
+        else {
           if (SEQUENTIAL)
             posix_fadvise64(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
           // V100 has 6MB L2 cache (per device) and 128 kB L1 cache(per SM).
@@ -681,19 +680,6 @@ std::vector<torch::Tensor> batch_decompress(
           }
           thread_copy_done[thread_id] = circle_done_events[buffer_id];
           log(prefix + "took " + pprint(sync_time) + " to sync " + std::to_string(chunks) + " chunks");
-        }
-        else {
-          host_compressed_data = file_loader->get_buffer(input_buffer_len, thread_id);
-          while (already_read < input_buffer_len) {
-            size_t to_read = std::min(CHUNK_SIZE, input_buffer_len - already_read);
-            // if (!file.read(reinterpret_cast<char*>(host_compressed_data + already_read), to_read))
-            if (!fread(reinterpret_cast<char*>(host_compressed_data + already_read), to_read, 1, file))
-              throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + ")");
-            CUDA_CHECK(cudaMemcpyAsync(comp_buffer + already_read, host_compressed_data + already_read, to_read, cudaMemcpyDefault, stream));
-            already_read += to_read;
-            chunks++;
-          }
-          CUDA_CHECK(cudaEventRecord(thread_copy_done[thread_id], stream));
         }
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         std::string pretty_chunk_size = pprint(std::min(CHUNK_SIZE, input_buffer_len), 0);
@@ -847,7 +833,6 @@ std::vector<torch::Tensor> batch_decompress(
   // close file
   file.close();
 
-
   return tensors;
 }
 
@@ -864,7 +849,7 @@ public:
     std::vector<CompressedFile> files;
     std::vector<std::vector<int>> thread_to_idx;
     std::tie(thread_to_idx, files) = load_csv(fname);
-    // do some more validation
+    // ideally do some more validation
 
     size_t num_threads = std::min(static_cast<int>(files.size()), NUM_THREADS);
     if (thread_to_idx.size() != num_threads) {
@@ -935,14 +920,13 @@ public:
 // }
 
 PYBIND11_MODULE(_nyacomp, m) {
-
   m.doc() = R"pbdoc(python bindings for nvcomp with torch)pbdoc";
 
-  m.def("compress", &compress, R"pbdoc(compress)pbdoc", py::arg("data"), py::arg("filename"));
+  m.def("compress", &compress, R"pbdoc(compress bytes to a file)pbdoc", py::arg("data"), py::arg("filename"));
 
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
-  m.def("batch_decompress", &batch_decompress, "good decompress batch", py::arg("files"), py::arg("assignments"), py::call_guard<py::gil_scoped_release>());
+  m.def("batch_decompress", &batch_decompress, "decompress tensors with a threadpool", py::arg("files"), py::arg("assignments"), py::call_guard<py::gil_scoped_release>());
   // m.def("batch_decompress", &batch_decompress, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
 
   py::class_<CompressedFile>(m, "CompressedFile")
