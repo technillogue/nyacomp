@@ -53,7 +53,7 @@ with timer("stdlib imports"):
     import timeit
     from pathlib import Path
     from typing import Iterator, Union
-    import partition
+    from nyacomp import partition
 
 # FIXME: make the entire annotate thing configurable
 # and integrate it with timer
@@ -254,7 +254,9 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
 
 
 @annotate("load_compressed")
-def load_compressed(path: Path = default_path) -> Compressable:
+def load_compressed(path: str | Path = default_path) -> Compressable:
+    if isinstance(path, str):
+        path = Path(path)
     print("started load_compressed")
     with timer("import huggingface lib"):
         if os.getenv("ENV") == "PROD":
@@ -334,7 +336,9 @@ if __name__ == "__main__":
         with timer("from_pretrained"):
             if os.getenv("DIFFUSERS") or os.getenv("ENV") == "PROD":
                 import diffusers
-
+                # thing here about AIT
+                # needs to be compressed for the same diffusers version
+                # (or use state dict...)
                 model = diffusers.StableDiffusionPipeline.from_pretrained(
                     "CompVis/stable-diffusion-v1-4",
                     torch_dtype=torch.float16,
