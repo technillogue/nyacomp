@@ -6,7 +6,9 @@ set -o errexit
 # curl -O https://developer.download.nvidia.com/compute/nvcomp/2.6.1/local_installers/nvcomp_2.6.1_x86_64_12.x.tgz
 # # replace setup.py paths
 # python3.10 -m pip install torch pybind11
+# compile it targeting manylinux
 python3.10 setup.py bdist_wheel
+# bundle us and nvcomp, but exclude everything torch uses
 # the paths need to be dynamic
 # basically all of ~/.local/lib/python3.10/site-packages/torch/lib/*
 LD_LIBRARY_PATH="/opt/_internal/cpython-3.10.9/lib/python3.10/site-packages/torch/lib:/workdir/nvcomp/lib:$LD_LIBRARY_PATH" auditwheel -vvv repair \

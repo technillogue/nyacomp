@@ -150,10 +150,11 @@ def compress(model: Compressable, path: Path = default_path) -> float:
         # parameters = list(model.named_parameters()))
         parameters = list(model.parameters())
     elif isinstance(model, dict):
+        # state dict 
         parameters = list(sorted(model.values()))
     else:
-        parameters = get_pipeline_params(model)
         # pipeline
+        parameters = get_pipeline_params(model)
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 

@@ -46,8 +46,40 @@ def multifit_partition(sizes: list[int], bins: int = 32, k=20) -> list[list[int]
     if len(solution) < bins:
         solution.extend([] for _ in range(bins - len(solution)))
 
-
     return solution
+
+
+@functools.cache
+def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
+    indx = defaultdict(list)
+    for i, size in enumerate(sizes):
+        indx[size].append(i)
+
+    ordered = sorted(sizes, reverse=True)
+    # bins = greedy_partition(sizes, n_bins)
+    bins = multifit_partition(ordered, n_bins)
+    assert sum(map(len, bins)) == len(sizes), "wrong"
+
+    # move the smallest tensor from the largest thread with multiple tensors into any empty threads
+    while any(not b for b in bins):
+        biggest = sorted([bin for bin in bins if len(bin) > 2], key=sum)[-1]
+        empty = next(i for i, bin in enumerate(bins) if not bin)
+        moved = min(biggest)
+        biggest.remove(moved)
+        bins[empty].append(moved)
+
+    for bin in bins:
+        biggest_file = max(bin)
+        bin.remove(biggest_file)
+        bin.insert(0, biggest_file)
+
+    result = [[indx[size].pop(0) for size in bin] for bin in bins]
+    for bin in indx.values():
+        assert len(bin) == 0, "unexpected remaining tensor " + len(bin)
+    return result
+
+
+### old or experimental below
 
 
 def partition(sizes: list[int], bins: int = 32) -> list[list[int]]:
@@ -109,7 +141,8 @@ def score(binning: list[list[int]]) -> tuple[int, int]:
 
 # minimize the sum of the largest size in each bin
 # that is, few bins with the biggest sizes
-# instead of changes 
+# instead of changes
+
 
 def greedy_partition(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
     sizes = list(sizes)
@@ -125,7 +158,14 @@ def greedy_partition(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
             # otherwise take the one this increases the least
             new_size = bin_sizes[i] + number
             makespan_increase = max(0, new_size - current_makespan)
-            candidates.append((makespan_increase, max(number - max(bin, default=0), 0), bin_sizes[i], i))
+            candidates.append(
+                (
+                    makespan_increase,
+                    max(number - max(bin, default=0), 0),
+                    bin_sizes[i],
+                    i,
+                )
+            )
         i = min(candidates)[-1]
         bins[i].append(number)
         bin_sizes[i] += number
@@ -144,34 +184,6 @@ def greedy_partition(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
 
     return bins
 
-@functools.cache
-def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
-    indx = defaultdict(list)
-    for i, size in enumerate(sizes):
-        indx[size].append(i)
-
-    ordered = sorted(sizes, reverse=True)
-    #bins = greedy_partition(sizes, n_bins)
-    bins = multifit_partition(ordered, n_bins)
-    assert sum(map(len, bins)) == len(sizes), "wrong"
-
-    # move the smallest tensor from the largest thread with multiple tensors into any empty threads
-    while any(not b for b in bins):
-        biggest = sorted([bin for bin in bins if len(bin) > 2], key=sum)[-1]
-        empty = next(i for i, bin in enumerate(bins) if not bin)
-        moved = min(biggest)
-        biggest.remove(moved)
-        bins[empty].append(moved)
-
-    for bin in bins:
-        biggest_file = max(bin)
-        bin.remove(biggest_file)
-        bin.insert(0, biggest_file)
-
-    result = [[indx[size].pop(0) for size in bin] for bin in bins]
-    for bin in indx.values():
-        assert len(bin) == 0, "unexpected remaining tensor " + len(bin)
-    return result
 
 def greedy_partition_rand(
     sizes: list[int], n_bins: int = 32, k: int = 4
