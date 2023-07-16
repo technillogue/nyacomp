@@ -18,7 +18,6 @@
 // #include "nvcomp/lz4.hpp"
 #include "nvcomp/nvcompManagerFactory.hpp"
 // #include "nvToolsExt.h"
-// #include "coz.h"
 
 
 #define STRINGIFY(x) #x
@@ -67,7 +66,6 @@ std::string pprint(cudaStream_t stream) {
 }
 
 std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
-  // std::string pprint(std::chrono::duration<int64_t, std::nano> duration, int precision = 2) {
   if (duration < std::chrono::microseconds(1000))
     return std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()) + "µs";
   if (duration < std::chrono::milliseconds(2000)) // at least 2ms feels like better precision
@@ -98,7 +96,6 @@ std::string pprint_throughput(size_t bytes, std::chrono::duration<int64_t, std::
 }
 
 
-
 std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
   if (!file.is_open())
@@ -115,7 +112,6 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
   return std::make_pair(buffer, file_size);
 }
 
-
 std::pair<uint8_t*, size_t> load_file_wrapper(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
   if (!file.is_open())
@@ -131,6 +127,7 @@ std::pair<uint8_t*, size_t> load_file_wrapper(const std::string& filename) {
 
   return std::make_pair(buffer, file_size);
 }
+
 
 size_t get_fsize(std::string filename) {
   struct stat st;
@@ -233,12 +230,6 @@ torch::Tensor make_tensor(const std::vector<int64_t>& shape, const std::string& 
   return torch::empty(shape, options);
 }
 
-// cudaMemcpy 128kb ?
-// i5: L1 90K L2 2MB L3 24MB
-// 3090: L1 128kb L2 6MB
-// and either 4kb, 128kb or 2-4MB
-// sd unet is 1.7 GB, vae 580MB, clip 235MB
-
 
 torch::Tensor decompress(const std::string filename, std::vector<int64_t> shape, std::string dtype) {
   std::vector<uint8_t> compressed_data;
@@ -274,19 +265,6 @@ torch::Tensor decompress(const std::string filename, std::vector<int64_t> shape,
   return tensor;
 }
 
-// class FileLoader {
-// public:
-//   FileLoader(size_t total_size, size_t num_threads) : remaining_releases(num_threads) /* ...*/ {
-//     CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
-//   }
-//   ~FileLoader() { CUDA_CHECK(cudaFreeHost(shared_buffer)); }
-//   uint8_t* get_buffer(size_t size, size_t thread_id) {
-//     if (thread_offsets[thread_id] == 0)
-//       thread_offsets[thread_id] = global_offset.fetch_add(size);
-//     return shared_buffer + thread_offsets[thread_id];
-//   }
-// private: // ...
-// };
 
 class FileLoader {
 public:
@@ -345,6 +323,7 @@ public:
     return shared_buffer + thread_offsets[thread_id];
   }
 
+  // not used
   std::pair<uint8_t*, size_t> load_file_pinned(const std::string& filename, size_t thread_id) {
     if (shared_buffer == nullptr)
       alloc_future.wait();
@@ -433,24 +412,6 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(s
   return std::make_pair(thread_to_idx, files);
 }
 
-
-// struct DeviceBuffer {
-//   uint8_t* data;
-//   size_t size;
-//   cudaEvent_t free_event;
-
-//   DeviceBuffer(size_t size, cudaStream_t stream)
-//     : size(size) {
-//       CUDA_CHECK(cudaMallocAsync(&data, size, stream));
-//       CUDA_CHECK(cudaEventCreateWithFlags(&free_event, cudaEventDisableTiming));
-//     }
-
-//   // ~DeviceBuffer() {
-//   //   CUDA_CHECK(cudaEventSynchronize(free_event));
-//   //   CUDA_CHECK(cudaFree(data));
-//   //   CUDA_CHECK(cudaEventDestroy(free_event));
-//   // }
-// };
 
 
 class SyncedGdeflateManager: public GdeflateManager {
@@ -762,7 +723,6 @@ std::vector<torch::Tensor> batch_decompress(
         log(prefix + "processed in " + std::to_string(file_elapsed_time) + " ms");
         thread_copy_time += copy_time;
         thread_decomp_time += decomp_time;
-        // COZ_PROGRESS_NAMED("decompress");
       }
       auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
@@ -830,7 +790,6 @@ std::vector<torch::Tensor> batch_decompress(
   file << ",\"sleep\":" << getenv("SLEEP", 3) << ",\"total_read_time\":" << total_read_time.count();
   file << ", \"name\":\"" << (std::getenv("NAME") ? std::getenv("NAME") : "unknown") << "\"";
   file << "}" << std::endl;
-  // close file
   file.close();
 
   return tensors;
@@ -886,39 +845,6 @@ public:
 };
 
 
-// extern "C" {
-//   void fake_batch_decompress() {
-//     std::vector<std::string> filenames;
-//     {
-//       std::ifstream file("/tmp/filenames.txt");
-//       std::string line;
-//       while (std::getline(file, line)) filenames.push_back(line);
-//     }
-//     std::vector<std::vector<int64_t>> shapes;
-//     {
-//       std::ifstream file("/tmp/shapes.txt");
-//       std::string line;
-//       while (std::getline(file, line)) {
-//         std::vector<int64_t> shape;
-//         std::istringstream ss(line);
-//         std::string token;
-//         while (std::getline(ss, token, ',')) shape.push_back(std::stoll(token));
-//         shapes.push_back(shape);
-//       }
-//     }
-//     std::vector<std::string> dtypes(filenames.size(), "float32");
-//     std::vector<CompressedFile> files(filenames.size());
-//     for (int i = 0; i < (int)filenames.size(); i++) {
-//       files[i].filename = filenames[i];
-//       files[i].tensor_shape = shapes[i];
-//       files[i].dtype = "float32";
-//     }
-//     std::vector<std::vector<int>> thread_to_indexes(getenv("NUM_THREADS", 32));
-//     for (size_t i = 0; i < filenames.size(); i++) thread_to_indexes[i % thread_to_indexes.size()].push_back(i);
-//     batch_decompress(files, thread_to_indexes);
-//   }
-// }
-
 PYBIND11_MODULE(_nyacomp, m) {
   m.doc() = R"pbdoc(python bindings for nvcomp with torch)pbdoc";
 
@@ -927,7 +853,6 @@ PYBIND11_MODULE(_nyacomp, m) {
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
   m.def("batch_decompress", &batch_decompress, "decompress tensors with a threadpool", py::arg("files"), py::arg("assignments"), py::call_guard<py::gil_scoped_release>());
-  // m.def("batch_decompress", &batch_decompress, "good decompress batch (limit)", py::arg("files"), py::arg("assignments"));
 
   py::class_<CompressedFile>(m, "CompressedFile")
     .def(py::init<const std::string&, const std::vector<int64_t>&, const std::string&, const size_t>());
