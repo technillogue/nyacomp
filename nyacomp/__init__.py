@@ -32,6 +32,14 @@ def timer(msg: str) -> "Iterator[None]":
     yield
     print(f"{msg} took {time.time() - start:.3f}s")
 
+if os.getenv("SYMLINK_CUDART"):
+    # torch bundles cudart with a mangled name
+    # nyacomp is compiled against a specific mangled name
+    # the rpath expects _nyacomp.so to be at the top level of site-packages and torch/lib/* to be where libcuda and libtorch are
+    # we expect we copied site-packages into the current directory
+    # a symlink is enough to support versions of torch with a different libcudart
+    os.system("ln -s torch/lib/libcudart* torch/lib/libcudart-d0da41ae.so.11.0")
+
 with timer("import _nyacomp"):
     import _nyacomp
 

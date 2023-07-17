@@ -166,7 +166,7 @@ int compress(py::bytes pybytes, const std::string filename) {
   // 1 : low-throughput, high compression ratio
   // 2 : highest-throughput, entropy-only compression (use for symmetric compression/decompression performance
 
-  GdeflateManager nvcomp_manager{ chunk_size, 0, stream };
+  GdeflateManager nvcomp_manager{ chunk_size, nvcompBatchedGdeflateDefaultOpts, stream, NoComputeNoVerify };
 
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);
   uint8_t* comp_buffer;
@@ -416,8 +416,8 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(s
 
 class SyncedGdeflateManager: public GdeflateManager {
 public:
-  SyncedGdeflateManager(int chunk_size, int compression_level, cudaStream_t stream, std::string name)
-    : GdeflateManager(chunk_size, compression_level, stream), stream_(stream), name(name) {}
+  SyncedGdeflateManager(int chunk_size, nvcompBatchedGdeflateOpts_t compression_level, cudaStream_t stream, std::string name)
+    : GdeflateManager(chunk_size, compression_level, stream, NoComputeNoVerify), stream_(stream), name(name) {}
 
   // Override the destructor
   ~SyncedGdeflateManager() {
@@ -660,7 +660,7 @@ std::vector<torch::Tensor> batch_decompress(
         if (!decomp_nvcomp_manager) {
           auto create_manager_begin = std::chrono::steady_clock::now();
           std::string name = "thread-" + std::to_string(thread_id) + "-stream-" + stream_name;
-          decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, 0, stream, name); // 1 << 16 is 64KB, 0 is fast compression
+          decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, nvcompBatchedGdeflateDefaultOpts, stream, name); // 1 << 16 is 64KB, 0 is fast compression
           managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
           log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + stream_name + " (job " + std::to_string(job_number) + ")");
         }

@@ -24,15 +24,13 @@ __version__ = "0.0.1"
 #         super().build_extension(ext)
 
 
-NVCOMP_INCLUDE_DIR = "/home/sylv/dryad/fast/py-nvcomp/_nvcomp/include"
 NVCOMP_LIB_NAME = "nvcomp"
-NVCOMP_LIB_DIR = "/home/sylv/dryad/fast/py-nvcomp/_nvcomp/lib"
+NVCOMP_INCLUDE_DIR = "nvcomp/include"
+NVCOMP_LIB_DIR = "nvcomp/lib"
 
-# CUDA_INCLUDE_DIR = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.3/include'
-CUDA_INCLUDE_DIR = "/usr/local/cuda-12.1/include"
 CUDA_LIB_NAME = "cudart"
-# CUDA_LIB_DIR = 'C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v11.3/lib/x64'
-CUDA_LIB_DIR = "/usr/local/cuda-12.1/lib64"
+CUDA_INCLUDE_DIR = "/usr/local/cuda/include"
+CUDA_LIB_DIR = "/usr/local/cuda/lib64"
 
 ext_modules = [
     CppExtension(
@@ -40,22 +38,13 @@ ext_modules = [
         ["src/main.cpp"],
         # Example: passing in the version to the compiled code
         define_macros=[("VERSION_INFO", __version__)],
-        include_dirs=[
-            "nvcomp/include",
-            "/usr/local/cuda/include",
-        ],
-        libraries=["nvcomp", "cudart"],
-        library_dirs=[
-            "nvcomp/lib",
-            "/usr/local/cuda/lib64",
-        ],
-        # extra_link_args=["-o./nya_exec"]
-        extra_compile_args=["-fvisibility=hidden"]
+        include_dirs=[NVCOMP_INCLUDE_DIR, CUDA_INCLUDE_DIR],
+        libraries=[NVCOMP_LIB_NAME, CUDA_LIB_NAME],
+        library_dirs=[NVCOMP_LIB_DIR, CUDA_LIB_DIR],
+        extra_compile_args=["-fvisibility=hidden", "-std=c++14"],
     ),
 ]
 
-# import pdb
-# pdb.set_trace()
 setup(
     name="nyacomp",
     version=__version__,
