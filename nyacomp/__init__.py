@@ -26,11 +26,13 @@ if not os.getenv("NO_HIDE_MODULES"):
 import contextlib
 import time
 
+
 @contextlib.contextmanager
 def timer(msg: str) -> "Iterator[None]":
     start = time.time()
     yield
     print(f"{msg} took {time.time() - start:.3f}s")
+
 
 if os.getenv("SYMLINK_CUDART"):
     # torch bundles cudart with a mangled name
@@ -65,12 +67,13 @@ with timer("stdlib imports"):
 
 # FIXME: make the entire annotate thing configurable
 # and integrate it with timer
-# just have loglevel  
+# just have loglevel
 
 try:
     with timer("nvtx"):
         from nvtx import annotate
 except ImportError:
+
     class annotate:
         def __init__(self, _: str) -> None:
             pass
@@ -83,6 +86,7 @@ except ImportError:
 
         def __call__(self, func: "Any") -> "Any":
             return func
+
 
 try:
     from humanize.filesize import naturalsize as natsize
@@ -115,19 +119,23 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
         else:
             print(f"compressing parameter to {path}")
             new_size = _nyacomp.compress(data, str(path))
-        if new_size < size:
-            meta = {
-                "filename": str(path),
-                "shape": list(param.shape),
-                "dtype": str(param.dtype).removeprefix("torch."),
-                "decompressed_size": size,
-                "compressed_size": new_size,
-            }
-            # torch.nn.parameter.UninitializedParameter
-            param.data = torch.tensor([], dtype=param.dtype)
-            return meta, size, new_size
-        print("bad compression ratio despite heuristic, deleting ", path)
-        path.unlink()
+        meta = {
+            "filename": str(path),
+            "shape": list(param.shape),
+            "dtype": str(param.dtype).removeprefix("torch."),
+            "decompressed_size": size,
+            "compressed_size": new_size,
+        }
+        # torch.nn.parameter.UninitializedParameter
+        param.data = torch.tensor([], dtype=param.dtype)
+        if new_size > size:
+            print("bad compression ratio, replacing with uncompressed", path)
+            path.unlink()
+            path = path.with_suffix(".raw")
+            path.open("wb").write(data)
+            meta |= {"filename": str(path), "compressed_size": size}
+            return meta, size, size
+        return meta, size, new_size
     return {}, size, size
 
 
@@ -148,17 +156,20 @@ def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
     lines = list(map(" ".join, info))
     open(f, "w").write("\n".join([ass] + lines))
 
+
 Compressable = Union["torch.nn.Module", dict]
+
 
 def compress(model: Compressable, path: Path = default_path) -> float:
     import numpy as np
-    sys.modules[__name__].np = np # import here so tensor_bytes can find it
+
+    sys.modules[__name__].np = np  # import here so tensor_bytes can find it
 
     if isinstance(model, torch.nn.Module):
         # parameters = list(model.named_parameters()))
         parameters = list(model.parameters())
     elif isinstance(model, dict):
-        # state dict 
+        # state dict
         parameters = list(sorted(model.values()))
     else:
         # pipeline
@@ -332,6 +343,7 @@ def stats(times: list[int | float]) -> str:
     }
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
 
+
 with timer("import torch"):
     import torch
 
@@ -345,6 +357,7 @@ if __name__ == "__main__":
         with timer("from_pretrained"):
             if os.getenv("DIFFUSERS") or os.getenv("ENV") == "PROD":
                 import diffusers
+
                 # thing here about AIT
                 # needs to be compressed for the same diffusers version
                 # (or use state dict...)
