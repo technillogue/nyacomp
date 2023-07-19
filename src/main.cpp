@@ -361,12 +361,16 @@ struct CompressedFile {
   std::vector<int64_t> tensor_shape;
   std::string dtype;
   size_t decompressed_size;
+  bool is_compressed = true;
 
-  // these constructors are probably unnecessary, i added them trying to fix a pybind visibility warning that needed to be corrected with a flag
-  CompressedFile() = default;
 
+  // if filename ends with raw, set not compressed otherwise true
   CompressedFile(const std::string& filename, const std::vector<int64_t>& tensor_shape, const std::string& dtype, const size_t decompressed_size)
-    : filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size) {}
+    : filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size) {
+    // compare returns 0 or the difference between the first non-matching characters
+    if (filename.compare(filename.size() - 3, 3, "raw") == 0)
+      is_compressed = false;
+  }
 };
 
 
@@ -562,10 +566,15 @@ std::vector<torch::Tensor> batch_decompress(
 
         debug(prefix + "allocating device memory with stream " + stream_name);
         uint8_t* comp_buffer;
-        CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
-        if (!comp_buffer)
-          throw std::runtime_error("Could not allocate device memory for compressed data");
-
+        // if this is an uncompressed tensor, we want comp_buffer to already be the tensor pointer
+        if (!files[i].is_compressed) {
+          tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
+          comp_buffer = static_cast<uint8_t*>(tensors[i].data_ptr());
+        } else {
+          CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
+          if (!comp_buffer)
+            throw std::runtime_error("Could not allocate device memory for compressed data");
+        }
         auto copy_done = thread_copy_done[thread_id];
         if (copy_done != nullptr) {
           auto start = std::chrono::steady_clock::now();
@@ -652,77 +661,80 @@ std::vector<torch::Tensor> batch_decompress(
         //   log(prefix + "scheduling release of file_loader on stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
         //   CUDA_CHECK(cudaLaunchHostFunc(stream, FileLoader::release, file_loader));
         // }
+        if (files[i].is_compressed){
+          if (TENSOR_EARLY)
+            tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
+          auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
 
-        if (TENSOR_EARLY)
-          tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
-        auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
+          if (!decomp_nvcomp_manager) {
+            auto create_manager_begin = std::chrono::steady_clock::now();
+            std::string name = "thread-" + std::to_string(thread_id) + "-stream-" + stream_name;
+            decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, nvcompBatchedGdeflateDefaultOpts, stream, name); // 1 << 16 is 64KB, 0 is fast compression
+            managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
+            log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + stream_name + " (job " + std::to_string(job_number) + ")");
+          }
 
-        if (!decomp_nvcomp_manager) {
-          auto create_manager_begin = std::chrono::steady_clock::now();
-          std::string name = "thread-" + std::to_string(thread_id) + "-stream-" + stream_name;
-          decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, nvcompBatchedGdeflateDefaultOpts, stream, name); // 1 << 16 is 64KB, 0 is fast compression
-          managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
-          log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + stream_name + " (job " + std::to_string(job_number) + ")");
+          auto config_begin = std::chrono::steady_clock::now();
+
+          // this syncs the stream
+          DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
+          auto decomp_begin = std::chrono::steady_clock::now();
+          debug(prefix + "configuring decomp took " + pprint(decomp_begin - config_begin) + ", decompressing");
+
+          // auto new_size = decomp_nvcomp_manager.get()->get_required_scratch_buffer_size();
+          // // cudaMemPoolCreate(), cudaMallocFromPoolAsync()
+          // // auto scratch_buffer = std::make_unique<uint8_t[]>(size);        
+          // if (scratch_buffer == nullptr || scratch_buffer_size < new_size) {
+          //   if (scratch_buffer != nullptr) {
+          //     log(prefix + "freeing smaller scratch buffer of size " + std::to_string(scratch_buffer_size));
+          //     CUDA_CHECK(cudaFreeAsync(scratch_buffer, stream));
+          //   }
+          //   scratch_buffer_size = new_size;
+          //   log(prefix + "allocating new scratch buffer of size " + std::to_string(scratch_buffer_size) + " for decompressed size " + std::to_string(files[i].decompressed_size));
+          //   CUDA_CHECK(cudaMallocAsync(&scratch_buffer, scratch_buffer_size, stream));
+          // }
+          // decomp_nvcomp_manager->set_scratch_buffer(scratch_buffer);
+          if (!TENSOR_EARLY)
+            tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
+
+          bool safe = tensors[i].is_contiguous();
+          if (!safe) {
+            std::cerr << "Tensor " << i << " is not contiguous!!! something bad has happened" << std::endl;
+            throw std::runtime_error("Tensor " + std::to_string(i) + " is not contiguous");
+          }
+          auto tens = tensors[i];
+          auto ptr = tens.data_ptr();
+          auto dest = static_cast<uint8_t*>(ptr);
+
+          // if this tensor was uncompressed, don't decompress, but also don't free comp_buffer
+
+          try {
+            decomp_nvcomp_manager->decompress(dest, comp_buffer, decomp_config);
+          }
+          catch (const std::exception& e) {
+            log(prefix + "exception: " + std::string(e.what()));
+            log(prefix + "cuda error: " + std::string(cudaGetErrorString(cudaGetLastError())));
+            log(prefix + "cuda stream error: " + std::string(cudaGetErrorString(cudaStreamQuery(stream))));
+            throw e;
+          }
+
+          if (SYNC_DECOMPRESS)
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+          // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
+          ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
+
+          log(prefix + "decompressed in " + pprint(decomp_time) + ", freeing with stream " + stream_name + "");
+          // need to not free comp_buffer until the decompression is complete, so we should 
+          CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
+          if (SYNC_FREE)
+            CUDA_CHECK(cudaStreamSynchronize(stream));
+          thread_decomp_time += decomp_time; // shrug
         }
-
-        auto config_begin = std::chrono::steady_clock::now();
-
-        // this syncs the stream
-        DecompressionConfig decomp_config = decomp_nvcomp_manager->configure_decompression(comp_buffer);
-        auto decomp_begin = std::chrono::steady_clock::now();
-        debug(prefix + "configuring decomp took " + pprint(decomp_begin - config_begin) + ", decompressing");
-
-        // auto new_size = decomp_nvcomp_manager.get()->get_required_scratch_buffer_size();
-        // // cudaMemPoolCreate(), cudaMallocFromPoolAsync()
-        // // auto scratch_buffer = std::make_unique<uint8_t[]>(size);        
-        // if (scratch_buffer == nullptr || scratch_buffer_size < new_size) {
-        //   if (scratch_buffer != nullptr) {
-        //     log(prefix + "freeing smaller scratch buffer of size " + std::to_string(scratch_buffer_size));
-        //     CUDA_CHECK(cudaFreeAsync(scratch_buffer, stream));
-        //   }
-        //   scratch_buffer_size = new_size;
-        //   log(prefix + "allocating new scratch buffer of size " + std::to_string(scratch_buffer_size) + " for decompressed size " + std::to_string(files[i].decompressed_size));
-        //   CUDA_CHECK(cudaMallocAsync(&scratch_buffer, scratch_buffer_size, stream));
-        // }
-        // decomp_nvcomp_manager->set_scratch_buffer(scratch_buffer);
-        if (!TENSOR_EARLY)
-          tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
-
-        bool safe = tensors[i].is_contiguous();
-        if (!safe) {
-          std::cerr << "Tensor " << i << " is not contiguous!!! something bad has happened" << std::endl;
-          throw std::runtime_error("Tensor " + std::to_string(i) + " is not contiguous");
-        }
-        auto tens = tensors[i];
-        auto ptr = tens.data_ptr();
-        auto dest = static_cast<uint8_t*>(ptr);
-
-        try {
-          decomp_nvcomp_manager->decompress(dest, comp_buffer, decomp_config);
-        }
-        catch (const std::exception& e) {
-          log(prefix + "exception: " + std::string(e.what()));
-          log(prefix + "cuda error: " + std::string(cudaGetErrorString(cudaGetLastError())));
-          log(prefix + "cuda stream error: " + std::string(cudaGetErrorString(cudaStreamQuery(stream))));
-          throw e;
-        }
-
-        if (SYNC_DECOMPRESS)
-          CUDA_CHECK(cudaStreamSynchronize(stream));
-        // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
-        ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
-
-        log(prefix + "decompressed in " + pprint(decomp_time) + ", freeing with stream " + stream_name + "");
-        // need to not free comp_buffer until the decompression is complete, so we should 
-        CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
-        if (SYNC_FREE)
-          CUDA_CHECK(cudaStreamSynchronize(stream));
-
         auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - file_start_time).count();
 
         log(prefix + "processed in " + std::to_string(file_elapsed_time) + " ms");
         thread_copy_time += copy_time;
-        thread_decomp_time += decomp_time;
+        
       }
       auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
@@ -730,6 +742,10 @@ std::vector<torch::Tensor> batch_decompress(
       int throughput = std::round((float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
       log("thread " + std::to_string(thread_id) + " processed " + std::to_string(total_decompressed_size / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
       // std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)*1000));
+
+      
+      // find the file that's all the small tensors, decompress, then create tensors from that with from_blob
+      // read the offsets from a file
 
       // thread_managers[thread_id] = managers;
       return std::make_tuple(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time), std::chrono::duration_cast<ms_t>(thread_read_time));
