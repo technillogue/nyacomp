@@ -2,6 +2,7 @@
 set -o xtrace
 set -o pipefail
 set -o errexit
+VERSION="0.0.2"
 # git clone ...
 # curl -O https://developer.download.nvidia.com/compute/nvcomp/2.6.1/local_installers/nvcomp_2.6.1_x86_64_12.x.tgz
 # # replace setup.py paths
@@ -39,13 +40,13 @@ LD_LIBRARY_PATH="/opt/_internal/cpython-3.11.9/lib/python3.11/site-packages/torc
 --exclude libtorch_python.so \
 --exclude libtorch.so \
 --exclude libnvidia-ml.so.515.43.04 \
-dist/nyacomp-0.0.1-cp311-cp311-linux_x86_64.whl
+dist/nyacomp-$VERSION-cp311-cp311-linux_x86_64.whl
 
 # better name:
-# nyacomp-0.0.1-cp311-manylinux2014_x86_64.whl
+# nyacomp-$VERSION-cp311-manylinux2014_x86_64.whl
 mkdir -p wheelhouse/check
 cd wheelhouse/check || exit
-unzip -o ../nyacomp-0.0.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl _nyacomp.cpython-311-x86_64-linux-gnu.so
+unzip -o ../nyacomp-$VERSION-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl _nyacomp.cpython-311-x86_64-linux-gnu.so
 patchelf --add-rpath '$ORIGIN/torch/lib' _nyacomp.cpython-311-x86_64-linux-gnu.so
 # this has to be kept in sync with the torch version
 #RT_LIB=$(python3.11 -c 'import pathlib as p, torch; print(next((p.Path(torch.__file__).parent / "lib").glob("libcudart*")).name)')
@@ -54,8 +55,8 @@ patchelf --replace-needed libcudart.so.11.0 $RT_LIB _nyacomp.cpython-311-x86_64-
 # if building for release, strip debug symbols from each binary in nyacomp.libs
 if [[ "$1" == "release" ]]; then
     strip --strip-debug _nyacomp.cpython-311-x86_64-linux-gnu.so
-    unzip -o ../nyacomp-0.0.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl 'nyacomp.libs/*'
+    unzip -o ../nyacomp-$VERSION-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl 'nyacomp.libs/*'
     find . -name '*.so' | xargs strip --strip-debug
-    zip -o ../nyacomp-0.0.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl nyacomp.libs/*
+    zip -o ../nyacomp-$VERSION-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl nyacomp.libs/*
 fi
-zip -o ../nyacomp-0.0.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl _nyacomp.cpython-311-x86_64-linux-gnu.so
+zip -o ../nyacomp-$VERSION-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl _nyacomp.cpython-311-x86_64-linux-gnu.so
