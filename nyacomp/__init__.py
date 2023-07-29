@@ -1,3 +1,4 @@
+# pylint: disable=import-outside-toplevel,wrong-import-position,c-extension-no-member
 import importlib.abc
 import importlib.util
 import os
@@ -15,6 +16,7 @@ if not os.getenv("NO_HIDE_MODULES"):
         return orig_find_spec(name, package)
 
     class CustomFinder(importlib.abc.MetaPathFinder):
+        # pylint: disable=unused-argument
         def find_spec(self, fullname: str, path: str, target: "Any" = None) -> "Any":
             if fullname in hidden:
                 raise ImportError(f"{fullname} is blocked and cannot be imported.")
@@ -62,7 +64,7 @@ with timer("stdlib imports"):
     import threading
     import timeit
     from pathlib import Path
-    from typing import Iterator, Union
+    from typing import Any, Iterator, Union
     from nyacomp import partition
 
 # FIXME: make the entire annotate thing configurable
@@ -91,14 +93,11 @@ except ImportError:
 try:
     from humanize.filesize import naturalsize as natsize
 except ImportError:
-    natsize = lambda size: size
+    natsize = str # type: ignore
 
 
 def tensor_bytes(tensor: "torch.Tensor") -> bytes:
-    length = int(np.prod(tensor.shape).item())
-    bytes_per_item = torch._utils._element_size(tensor.dtype)
-
-    total_bytes = length * bytes_per_item
+    total_bytes = tensor.nelement() * tensor.element_size()
 
     ptr = tensor.data_ptr()
     newptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_ubyte))
@@ -188,12 +187,12 @@ def compress(model: Compressable, path: Path = default_path) -> float:
         total_size += size
         total_compressed_size += new_size
 
-    threads = int(os.getenv("NUM_THREADS") or os.cpu_count())
+    threads = int(os.getenv("NUM_THREADS") or os.cpu_count() or 1)
     sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
     assignments = partition.massage(sizes, threads)
 
     to_csv(meta, assignments, str(dir / "meta.csv"))
-    meta.append(assignments)
+    meta.append(assignments) # type: ignore
 
     pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb"))
     print("overall compression ratio:", total_compressed_size / total_size)
@@ -239,7 +238,7 @@ def get_args(path: Path) -> tuple[list[_nyacomp.CompressedFile], list[list[int]]
         for meta in real_meta
     ]
 
-    threads = int(os.getenv("NUM_THREADS") or os.cpu_count())
+    threads = int(os.getenv("NUM_THREADS") or os.cpu_count() or 1)
     print(
         f"assignments in pickle are for {len(assignments)} threads, we have {threads} threads"
     )
@@ -299,7 +298,7 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
     empty_size = torch.Size([0])
     with timer("setting params"):
         if isinstance(model, torch.nn.Module):
-            params = model.parameters()
+            params = list(model.parameters())
         else:
             params = get_pipeline_params(model)
         for param in params:
@@ -311,7 +310,7 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
     return model
 
 
-def with_cleanup(path):
+def with_cleanup(path: Path) -> None:
     prev_size = torch.cuda.memory.memory_reserved()
     model = load_compressed(path)
     del model
