@@ -57,6 +57,7 @@ else:
 
 with timer("stdlib imports"):
     import ctypes
+    import iteratools as it
     import gc
     import json
     import math
@@ -95,9 +96,11 @@ try:
 except ImportError:
     natsize = str # type: ignore
 
+def tensor_size(tensor: "torch.Tensor") -> int:
+    return tensor.nelement() * tensor.element_size()
 
 def tensor_bytes(tensor: "torch.Tensor") -> bytes:
-    total_bytes = tensor.nelement() * tensor.element_size()
+    total_bytes = tensor_size(tensor)
 
     ptr = tensor.data_ptr()
     newptr = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_ubyte))
@@ -164,12 +167,11 @@ MERGE_INFO_FNAME = "merged_tensors.csv"
 def merge_tensors(tensors: list["torch.Tensor"]) -> tuple[list["torch.Tensor"], str]:
     real_parameter_idx = enumerate(tensors)  # [(idx, tensor), ...]
     grouper = lambda x: x[1].shape
-    tsize = lambda tensor: tensor.nelement() * tensor.element_size()
-    maxsize = max(map(tsize, parameters))
+    maxsize = max(map(tensor_size, tensors))
     subgroups = []
 
     for _, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):
-        groupsize = tsize(group[0][1]) * len(group)
+        groupsize = tensor_size(group[0][1]) * len(group)
         if groupsize >= maxsize:
             # split the group into n groups such that the splits are close to equal size
             # and each split is less than maxsize
@@ -185,7 +187,6 @@ def merge_tensors(tensors: list["torch.Tensor"]) -> tuple[list["torch.Tensor"], 
         else:
             subgroups.append(sorted(group))
     merged_tensors = [torch.cat([param[1] for param in group], 0) for group in subgroups]
-    merged_idx = [(param[0] for param in group) for group in subgroups]
     info = "\n".join(",".join(str(param[0]) for param in group) for group in subgroups)
     return merged_tensors, info
 
@@ -218,7 +219,9 @@ def compress(model: Compressable, path: Path = default_path) -> float:
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
-    parameters, info = merge_tensors(parameters)
+    parameters, info = merge_tensors(parameters) # hmm
+
+
     open(path.parent / MERGE_INFO_FNAME, "w").write(info)
 
     total_size = 0.0
