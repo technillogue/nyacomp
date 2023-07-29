@@ -158,6 +158,47 @@ def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
 
 Compressable = Union["torch.nn.Module", dict]
 
+MERGE_INFO_FNAME = "merged_tensors.csv"
+
+
+def merge_tensors(tensors: list["torch.Tensor"]) -> tuple[list["torch.Tensor"], str]:
+    real_parameter_idx = enumerate(tensors)  # [(idx, tensor), ...]
+    grouper = lambda x: x[1].shape
+    tsize = lambda tensor: tensor.nelement() * tensor.element_size()
+    maxsize = max(map(tsize, parameters))
+    subgroups = []
+
+    for _, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):
+        groupsize = tsize(group[0][1]) * len(group)
+        if groupsize >= maxsize:
+            # split the group into n groups such that the splits are close to equal size
+            # and each split is less than maxsize
+            n_splits = (groupsize // maxsize) + 1
+            split_size, remainder = divmod(len(group), n_splits)
+            splits = [
+                group[i * split_size : (i + 1) * split_size] for i in range(n_splits)
+            ]
+            # Re-distribute remainder across the splits
+            for i in range(remainder):
+                splits[i].append(group[-(i + 1)])
+            subgroups.extend(sorted(splits))
+        else:
+            subgroups.append(sorted(group))
+    merged_tensors = [torch.cat([param[1] for param in group], 0) for group in subgroups]
+    merged_idx = [(param[0] for param in group) for group in subgroups]
+    info = "\n".join(",".join(str(param[0]) for param in group) for group in subgroups)
+    return merged_tensors, info
+
+
+def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tensor"]:
+    merges = [list(map(int, line.split(","))) for line in info.split("\n")]
+    unmerged = [
+        pair
+        for tensor, idxs in zip(tensors, merges)
+        for pair in zip(idxs, torch.tensor_split(tensor, len(idxs), 0))
+    ]
+    return [tensor for _, tensor in sorted(unmerged)]
+
 
 def compress(model: Compressable, path: Path = default_path) -> float:
     import numpy as np
@@ -173,8 +214,12 @@ def compress(model: Compressable, path: Path = default_path) -> float:
     else:
         # pipeline
         parameters = get_pipeline_params(model)
+
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
+
+    parameters, info = merge_tensors(parameters)
+    open(path.parent / MERGE_INFO_FNAME, "w").write(info)
 
     total_size = 0.0
     total_compressed_size = 0
@@ -294,7 +339,9 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
 
         pdb.set_trace()
 
-    tensors_iter = iter(tensors)
+    real_tensors = split_tensors(tensors, open(path.parent / MERGE_INFO_FNAME).read())
+
+    tensors_iter = iter(real_tensors)
     empty_size = torch.Size([0])
     with timer("setting params"):
         if isinstance(model, torch.nn.Module):
