@@ -57,7 +57,7 @@ else:
 
 with timer("stdlib imports"):
     import ctypes
-    import iteratools as it
+    import itertools as it
     import gc
     import json
     import math
@@ -218,11 +218,13 @@ def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tenso
     return [tensor for _, tensor in sorted(unmerged, key=lambda x: x[0])]
 
 
-def compress(model: Compressable, path: "Path | str" = default_path) -> float:
+def compress(model: Compressable, path: str | Path = default_path) -> float:
     import numpy as np
 
     sys.modules[__name__].np = np  # import here so tensor_bytes can find it
 
+    if isinstance(path, str):
+        path = Path(path)
     if isinstance(model, torch.nn.Module):
         # parameters = list(model.named_parameters()))
         orig_parameters = list(model.parameters())
@@ -413,10 +415,10 @@ def stats(times: list[int | float]) -> str:
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
 
 
-with timer("import torch"):
-    import torch
 
 if __name__ == "__main__":
+    with timer("import torch"):
+        import torch
     COMPRESS = os.getenv("COMPRESS")
     if os.getenv("ENV") == "PROD":
         model_path = Path("./data/boneless_model.pth")
