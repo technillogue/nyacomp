@@ -218,7 +218,7 @@ def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tenso
     return [tensor for _, tensor in sorted(unmerged, key=lambda x: x[0])]
 
 
-def compress(model: Compressable, path: Path = default_path) -> float:
+def compress(model: Compressable, path: "Path | str" = default_path) -> float:
     import numpy as np
 
     sys.modules[__name__].np = np  # import here so tensor_bytes can find it
@@ -233,6 +233,8 @@ def compress(model: Compressable, path: Path = default_path) -> float:
         # pipeline
         orig_parameters = get_pipeline_params(model)
 
+    if isinstance(path, str):
+        path = Path(path)
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
