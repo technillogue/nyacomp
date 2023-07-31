@@ -65,7 +65,7 @@ with timer("stdlib imports"):
     import threading
     import timeit
     from pathlib import Path
-    from typing import Any, Iterator, Union
+    from typing import Any, Iterator, Union, Sequence
     from nyacomp import partition
 
 # FIXME: make the entire annotate thing configurable
@@ -162,12 +162,13 @@ def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
 
 
 Compressable = Union["torch.nn.Module", dict]
+IdxTensor = tuple[int, "torch.Tensor"]
 
 MERGE_INFO_FNAME = "merged_tensors.csv"
 # f"{group[0][1].shape}:" +
 
 
-def get_bins(group: list["torch.Tensor"], n_splits: int) -> list[list["torch.Tensor"]]:
+def get_bins(group: list[IdxTensor], n_splits: int) -> list[list[IdxTensor]]:
     bin_sizes = [0 for _ in range(n_splits)]
     # preserve the order of bins, but make sure we would get [3, 2, 2] instead of [3, 3, 1]
     for i in range(len(group)):
@@ -182,7 +183,7 @@ def get_bins(group: list["torch.Tensor"], n_splits: int) -> list[list["torch.Ten
     return bins
 
 
-def merge_tensors(tensors: list["torch.Tensor"]) -> tuple[list["torch.Tensor"], str]:
+def merge_tensors(tensors: Sequence[Tensory]) -> tuple[list["torch.Tensor"], str]:
     real_parameter_idx = enumerate(tensors)  # [(idx, tensor), ...]
     grouper = lambda x: x[1].shape
     maxsize = max(map(tensor_size, tensors))
@@ -224,19 +225,18 @@ def compress(model: Compressable, path: Path = default_path) -> float:
 
     if isinstance(model, torch.nn.Module):
         # parameters = list(model.named_parameters()))
-        parameters = list(model.parameters())
+        orig_parameters = list(model.parameters())
     elif isinstance(model, dict):
         # state dict
-        parameters = list(sorted(model.values()))
+        orig_parameters = list(sorted(model.values()))
     else:
         # pipeline
-        parameters = get_pipeline_params(model)
+        orig_parameters = get_pipeline_params(model)
 
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
-    parameters, info = merge_tensors(parameters)  # hmm
-
+    parameters, info = merge_tensors(orig_parameters)  # hmm
     open(path.parent / MERGE_INFO_FNAME, "w").write(info)
 
     total_size = 0.0
@@ -249,6 +249,9 @@ def compress(model: Compressable, path: Path = default_path) -> float:
         meta.append(param_meta)
         total_size += size
         total_compressed_size += new_size
+
+    for param in orig_parameters:
+        param.data = torch.tensor([], dtype=param.dtype)
 
     threads = int(os.getenv("NUM_THREADS") or os.cpu_count() or 1)
     sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
