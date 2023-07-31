@@ -94,10 +94,12 @@ except ImportError:
 try:
     from humanize.filesize import naturalsize as natsize
 except ImportError:
-    natsize = str # type: ignore
+    natsize = str  # type: ignore
+
 
 def tensor_size(tensor: "torch.Tensor") -> int:
     return tensor.nelement() * tensor.element_size()
+
 
 def tensor_bytes(tensor: "torch.Tensor") -> bytes:
     total_bytes = tensor_size(tensor)
@@ -170,23 +172,28 @@ def merge_tensors(tensors: list["torch.Tensor"]) -> tuple[list["torch.Tensor"], 
     maxsize = max(map(tensor_size, tensors))
     subgroups = []
 
-    for _, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):
+    for shape, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):
+        group = list(group)
         groupsize = tensor_size(group[0][1]) * len(group)
         if groupsize >= maxsize:
             # split the group into n groups such that the splits are close to equal size
             # and each split is less than maxsize
-            n_splits = (groupsize // maxsize) + 1
-            split_size, remainder = divmod(len(group), n_splits)
-            splits = [
-                group[i * split_size : (i + 1) * split_size] for i in range(n_splits)
+            n_splits = math.ceil(groupsize / maxsize)
+            bin_sizes = [0 for _ in range(n_splits)]
+            # preserve the order of bins, but make sure we would get [3, 2, 2] instead of [3, 3, 1]
+            for i in range(len(group)):
+                bin_sizes[i % n_splits] += 1
+            bins = [
+                sorted(group[i * size : (i + 1) * size])
+                for i, size in enumerate(bin_sizes)
             ]
-            # Re-distribute remainder across the splits
-            for i in range(remainder):
-                splits[i].append(group[-(i + 1)])
-            subgroups.extend(sorted(splits))
+            subgroups.extend(sorted(bins))
         else:
             subgroups.append(sorted(group))
-    merged_tensors = [torch.cat([param[1] for param in group], 0) for group in subgroups]
+    merged_tensors = [
+        torch.cat([param[1] for param in group], 0) for group in subgroups
+    ]
+    # f"{group[0][1].shape}:" +
     info = "\n".join(",".join(str(param[0]) for param in group) for group in subgroups)
     return merged_tensors, info
 
@@ -196,9 +203,10 @@ def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tenso
     unmerged = [
         pair
         for tensor, idxs in zip(tensors, merges)
-        for pair in zip(idxs, torch.tensor_split(tensor, len(idxs), 0))
+        for pair in zip(idxs, torch.tensor_split(tensor, len(idxs), dim=0))
     ]
-    return [tensor for _, tensor in sorted(unmerged)]
+    # sort by index to recover the original order
+    return [tensor for _, tensor in sorted(unmerged, key=lambda x: x[0])]
 
 
 def compress(model: Compressable, path: Path = default_path) -> float:
@@ -219,8 +227,7 @@ def compress(model: Compressable, path: Path = default_path) -> float:
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
-    parameters, info = merge_tensors(parameters) # hmm
-
+    parameters, info = merge_tensors(parameters)  # hmm
 
     open(path.parent / MERGE_INFO_FNAME, "w").write(info)
 
@@ -240,7 +247,7 @@ def compress(model: Compressable, path: Path = default_path) -> float:
     assignments = partition.massage(sizes, threads)
 
     to_csv(meta, assignments, str(dir / "meta.csv"))
-    meta.append(assignments) # type: ignore
+    meta.append(assignments)  # type: ignore
 
     pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb"))
     print("overall compression ratio:", total_compressed_size / total_size)
