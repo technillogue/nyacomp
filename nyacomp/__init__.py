@@ -164,6 +164,22 @@ def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
 Compressable = Union["torch.nn.Module", dict]
 
 MERGE_INFO_FNAME = "merged_tensors.csv"
+# f"{group[0][1].shape}:" +
+
+
+def get_bins(group: list["torch.Tensor"], n_splits: int) -> list[list["torch.Tensor"]]:
+    bin_sizes = [0 for _ in range(n_splits)]
+    # preserve the order of bins, but make sure we would get [3, 2, 2] instead of [3, 3, 1]
+    for i in range(len(group)):
+        bin_sizes[i % n_splits] += 1
+    # [2, 3, 3] -> [2, 5, 8]
+    bin_offsets = list(it.accumulate(bin_sizes))
+    bins = [
+        sorted(group[start:end])
+        # -> [(0, 2), (2, 5), (5, 8)]
+        for start, end in zip([0] + bin_offsets, bin_offsets)
+    ]
+    return bins
 
 
 def merge_tensors(tensors: list["torch.Tensor"]) -> tuple[list["torch.Tensor"], str]:
@@ -179,21 +195,13 @@ def merge_tensors(tensors: list["torch.Tensor"]) -> tuple[list["torch.Tensor"], 
             # split the group into n groups such that the splits are close to equal size
             # and each split is less than maxsize
             n_splits = math.ceil(groupsize / maxsize)
-            bin_sizes = [0 for _ in range(n_splits)]
-            # preserve the order of bins, but make sure we would get [3, 2, 2] instead of [3, 3, 1]
-            for i in range(len(group)):
-                bin_sizes[i % n_splits] += 1
-            bins = [
-                sorted(group[i * size : (i + 1) * size])
-                for i, size in enumerate(bin_sizes)
-            ]
+            bins = get_bins(group, n_splits)
             subgroups.extend(sorted(bins))
         else:
             subgroups.append(sorted(group))
     merged_tensors = [
         torch.cat([param[1] for param in group], 0) for group in subgroups
     ]
-    # f"{group[0][1].shape}:" +
     info = "\n".join(",".join(str(param[0]) for param in group) for group in subgroups)
     return merged_tensors, info
 
