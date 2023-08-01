@@ -361,6 +361,7 @@ struct CompressedFile {
   std::vector<int64_t> tensor_shape;
   std::string dtype;
   size_t decompressed_size;
+  size_t compressed_size;
   bool is_compressed = true;
 
 
@@ -407,11 +408,12 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(s
   std::vector<CompressedFile> files;
   while (std::getline(file, line)) {
     std::stringstream ss(line);
-    std::string filename, tensor_shape_str, dtype, size;
+    std::string filename, tensor_shape_str, dtype, size, compressed_size_str;
     ss >> filename >> tensor_shape_str >> dtype >> size;
     std::vector<int64_t> tensor_shape = parse_ints(tensor_shape_str);
     size_t decompressed_size = std::stoull(size);
-    files.emplace_back(filename, tensor_shape, dtype, decompressed_size);
+    size_t compressed_size = std::stoull(compressed_size_str);
+    files.emplace_back(filename, tensor_shape, dtype, decompressed_size, compressed_size);
   }
   return std::make_pair(thread_to_idx, files);
 }
@@ -436,6 +438,47 @@ private:
   cudaStream_t stream_;
   std::string name;
 };
+
+int get_output_fd(std::string curl_command) {
+  /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
+  // use posix_spawn to avoid forking a new process
+  int pipefd[2];
+  if (pipe(pipefd) != 0)
+    throw std::runtime_error("Failed to create pipe for curl subprocess.");
+  // check proc/sys/fs/pipe-max-size, if we can't read it default to 1MB
+  // cf https://github.com/coreweave/tensorizer/blob/main/tensorizer/_wide_pipes.py#L75
+  int pipe_max_size;
+  {
+    std::ifstream file("/proc/sys/fs/pipe-max-size");
+    if (file.is_open())
+      file >> pipe_max_size;
+    else
+      pipe_max_size = 1048576;
+  }
+  // set pipe buffer size
+  if (fcntl(pipefd[0], F_SETPIPE_SZ, pipe_max_size) == -1)
+    throw std::runtime_error("Failed to set pipe buffer size.");
+  // set up posix_spawn
+  posix_spawn_file_actions_t actions;
+  posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
+  posix_spawn_file_actions_addclose(&actions, pipefd[0]);
+  posix_spawn_file_actions_addclose(&actions, pipefd[1]);
+  // spawn curl
+  char* curl_args[] = {
+    (char*) "sh",
+    (char*) "-c",
+    (char*) curl_command.c_str(),
+    NULL
+  };
+  pid_t pid;
+  if (posix_spawn(&pid, "/bin/sh", &actions, NULL, curl_args, NULL) != 0)
+    throw std::runtime_error("Failed to spawn curl subprocess.");
+  // close the write end of the pipe
+  close(pipefd[1]);
+  // return the read end of the pipe
+  return pipefd[0];
+}
 
 
 using ms_t = std::chrono::milliseconds;
@@ -510,8 +553,25 @@ std::vector<torch::Tensor> batch_decompress(
 
     futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
       log("started thread " + std::to_string(thread_id));
+
+      // just do big pipe curl subproc and eventually replace it with our own client with asio
+
+
+      FILE* curl_file = nullptr;
+      if (getenv("DOWNLOAD", 0)) {
+        auto start = std::chrono::steady_clock::now();
+        std::stringstream curl_command;
+        curl_command << "curl -s ";
+        for (auto idx : indexes)
+          curl_command << files[idx].filename << " ";
+        int curl_fd = get_output_fd(curl_command.str());
+        curl_file = fdopen(curl_fd, "r");
+      }
+
+
       auto thread_start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaSetDevice(0)); // this sets the cuda context
+
 
       std::chrono::microseconds thread_copy_time, thread_decomp_time = std::chrono::milliseconds::zero();
       std::chrono::nanoseconds thread_read_time = std::chrono::nanoseconds::zero();
@@ -545,23 +605,32 @@ std::vector<torch::Tensor> batch_decompress(
 
         uint8_t* host_compressed_data;
         size_t input_buffer_len;
-        // std::ifstream file = std::ifstream(files[i].filename, std::ios::binary | std::ios::ate);
-        // input_buffer_len = static_cast<size_t>(file.tellg());
-        // file.seekg(0, std::ios::beg);
-        int fd = open(files[i].filename.c_str(), O_RDONLY);
-        if (fd == -1)
-          throw std::invalid_argument("Could not open file " + files[i].filename);
-        FILE* file = fdopen(fd, "r");
-        if (file == nullptr)
-          throw std::invalid_argument("Could not open file " + files[i].filename);
-        input_buffer_len = lseek(fd, 0, SEEK_END);
-        if (input_buffer_len == (size_t)-1)
-          throw std::invalid_argument("Could not seek to end of file " + files[i].filename);
-        if (input_buffer_len == 0)
-          throw std::invalid_argument("File " + files[i].filename + " is empty");
-        if (input_buffer_len > files[i].decompressed_size)
-          throw std::invalid_argument("File " + files[i].filename + " is bigger than decompressed size" + pprint(input_buffer_len) + " vs " + pprint(files[i].decompressed_size));
-        lseek(fd, 0, SEEK_SET);
+        FILE* file = nullptr;
+        int fd = -1;
+        // if curl_file is not nullptr, we are using curl to download the file and not locally
+        if (curl_file != nullptr) {
+          input_buffer_len = files[i].compressed_size;
+          file = curl_file;
+        } else {
+          // std::ifstream file = std::ifstream(files[i].filename, std::ios::binary | std::ios::ate);
+          // input_buffer_len = static_cast<size_t>(file.tellg());
+          // file.seekg(0, std::ios::beg);
+          fd = open(files[i].filename.c_str(), O_RDONLY);
+          if (fd == -1)
+            throw std::invalid_argument("Could not open file " + files[i].filename);
+          FILE* file = fdopen(fd, "r");
+          if (file == nullptr)
+            throw std::invalid_argument("Could not open file " + files[i].filename);
+
+          input_buffer_len = lseek(fd, 0, SEEK_END);
+          if (input_buffer_len == (size_t)-1)
+            throw std::invalid_argument("Could not seek to end of file " + files[i].filename);
+          if (input_buffer_len == 0)
+            throw std::invalid_argument("File " + files[i].filename + " is empty");
+          if (input_buffer_len > files[i].decompressed_size)
+            throw std::invalid_argument("File " + files[i].filename + " is bigger than decompressed size" + pprint(input_buffer_len) + " vs " + pprint(files[i].decompressed_size));
+          lseek(fd, 0, SEEK_SET);
+        }
 
 
         debug(prefix + "allocating device memory with stream " + stream_name);
@@ -602,12 +671,8 @@ std::vector<torch::Tensor> batch_decompress(
           copy_message = "unpinned ";
           // log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
         }
-        else {
-          if (SEQUENTIAL)
-            posix_fadvise64(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-          // V100 has 6MB L2 cache (per device) and 128 kB L1 cache(per SM).
+
           int num_buffers = std::min(NUM_CIRCLE_BUFFERS, (int)((input_buffer_len + CHUNK_SIZE - 1) / CHUNK_SIZE));
-          // request the greatest possible instead of num_buffers for simplicity 
           host_compressed_data = file_loader->get_buffer(CHUNK_SIZE * NUM_CIRCLE_BUFFERS, thread_id);
           if (host_compressed_data == nullptr)
             throw std::runtime_error("Could not allocate host memory for compressed data");
@@ -617,28 +682,19 @@ std::vector<torch::Tensor> batch_decompress(
           for (int i = 0; i < num_buffers; i++)
             host_buffers[i] = host_compressed_data + i * CHUNK_SIZE;
 
-          std::chrono::microseconds sync_time(0);
-
           int buffer_id = 0;
           while (already_read < input_buffer_len) {
             size_t to_read = std::min(CHUNK_SIZE, input_buffer_len - already_read);
-            if (WILLNEED)
-              posix_fadvise(fd, already_read, to_read, POSIX_FADV_WILLNEED);
             buffer_id = chunks % num_buffers;
             if (circle_done_events[buffer_id] == nullptr) {
               debug(prefix + "created event");
               CUDA_CHECK(cudaEventCreateWithFlags(&circle_done_events[buffer_id], cudaEventDisableTiming));
             }
             else {
-              auto start = std::chrono::steady_clock::now();
               CUDA_CHECK(cudaEventSynchronize(circle_done_events[buffer_id])); // wait for previous copy to finish before changing host_compressed_data
-              sync_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
-              // debug(prefix + "before using next buffer " + std::to_string(buffer_id) + ", waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
             }
-            // if (!file->read(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read))
-            auto start = std::chrono::steady_clock::now();
+            // replace this part with reading from a connection, or an existing fully downloaded buffer
             auto fread_result = fread(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read, 1, file);
-            thread_read_time += (std::chrono::steady_clock::now() - start);
             if (fread_result != 1) {
               perror("freading file");
               throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + "): " + std::to_string(fread_result) + ", eof: " + std::to_string(feof(file)));
@@ -654,8 +710,8 @@ std::vector<torch::Tensor> batch_decompress(
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         std::string pretty_chunk_size = pprint(std::min(CHUNK_SIZE, input_buffer_len), 0);
         log(prefix + copy_message + "copied " + std::to_string(chunks) + " " + pretty_chunk_size + " chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
-        // close file
-        fclose(file);
+        if (curl_file == nullptr)
+          fclose(file);
 
         // if (job_number == indexes.size() - 1) {
         //   log(prefix + "scheduling release of file_loader on stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
