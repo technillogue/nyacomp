@@ -153,7 +153,7 @@ def ints(i: list[int]) -> str:
 def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
     ass = ",".join(map(ints, bins))
     info = [
-        [m["filename"], ints(m["shape"]), m["dtype"], str(m["decompressed_size"])]
+        [m["filename"], ints(m["shape"]), m["dtype"], str(m["decompressed_size"]), str(m["compressed_size"])]
         for m in meta
         if m
     ]
@@ -304,6 +304,7 @@ def get_args(path: Path) -> tuple[list[_nyacomp.CompressedFile], list[list[int]]
             meta["shape"],
             meta["dtype"],
             meta["decompressed_size"],
+            meta["compressed_size"],
         )
         for meta in real_meta
     ]

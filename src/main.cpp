@@ -4,6 +4,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <spawn.h>
 #include <sstream>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -366,8 +367,13 @@ struct CompressedFile {
 
 
   // if filename ends with raw, set not compressed otherwise true
-  CompressedFile(const std::string& filename, const std::vector<int64_t>& tensor_shape, const std::string& dtype, const size_t decompressed_size)
-    : filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size) {
+  CompressedFile(
+      const std::string& filename, 
+      const std::vector<int64_t>& tensor_shape, 
+      const std::string& dtype, 
+      const size_t decompressed_size, 
+      const size_t compressed_size
+    ): filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size), compressed_size(compressed_size){
     // compare returns 0 or the difference between the first non-matching characters
     if (filename.compare(filename.size() - 3, 3, "raw") == 0)
       is_compressed = false;
@@ -559,7 +565,6 @@ std::vector<torch::Tensor> batch_decompress(
 
       FILE* curl_file = nullptr;
       if (getenv("DOWNLOAD", 0)) {
-        auto start = std::chrono::steady_clock::now();
         std::stringstream curl_command;
         curl_command << "curl -s ";
         for (auto idx : indexes)
@@ -618,7 +623,7 @@ std::vector<torch::Tensor> batch_decompress(
           fd = open(files[i].filename.c_str(), O_RDONLY);
           if (fd == -1)
             throw std::invalid_argument("Could not open file " + files[i].filename);
-          FILE* file = fdopen(fd, "r");
+          file = fdopen(fd, "r");
           if (file == nullptr)
             throw std::invalid_argument("Could not open file " + files[i].filename);
 
@@ -670,8 +675,9 @@ std::vector<torch::Tensor> batch_decompress(
           CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
           copy_message = "unpinned ";
           // log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
-        }
-
+        } else {
+          if (SEQUENTIAL && curl_file == nullptr)
+            posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
           int num_buffers = std::min(NUM_CIRCLE_BUFFERS, (int)((input_buffer_len + CHUNK_SIZE - 1) / CHUNK_SIZE));
           host_compressed_data = file_loader->get_buffer(CHUNK_SIZE * NUM_CIRCLE_BUFFERS, thread_id);
           if (host_compressed_data == nullptr)
@@ -682,19 +688,26 @@ std::vector<torch::Tensor> batch_decompress(
           for (int i = 0; i < num_buffers; i++)
             host_buffers[i] = host_compressed_data + i * CHUNK_SIZE;
 
+          std::chrono::microseconds sync_time(0);
           int buffer_id = 0;
           while (already_read < input_buffer_len) {
             size_t to_read = std::min(CHUNK_SIZE, input_buffer_len - already_read);
+            if (WILLNEED && curl_file == nullptr) 
+              posix_fadvise64(fd, already_read, to_read, POSIX_FADV_WILLNEED);
             buffer_id = chunks % num_buffers;
             if (circle_done_events[buffer_id] == nullptr) {
               debug(prefix + "created event");
               CUDA_CHECK(cudaEventCreateWithFlags(&circle_done_events[buffer_id], cudaEventDisableTiming));
             }
             else {
+              auto start = std::chrono::steady_clock::now();
               CUDA_CHECK(cudaEventSynchronize(circle_done_events[buffer_id])); // wait for previous copy to finish before changing host_compressed_data
+              sync_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
             }
             // replace this part with reading from a connection, or an existing fully downloaded buffer
+            auto start = std::chrono::steady_clock::now();
             auto fread_result = fread(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read, 1, file);
+            thread_read_time += (std::chrono::steady_clock::now() - start);
             if (fread_result != 1) {
               perror("freading file");
               throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + "): " + std::to_string(fread_result) + ", eof: " + std::to_string(feof(file)));
@@ -927,7 +940,8 @@ PYBIND11_MODULE(_nyacomp, m) {
   m.def("batch_decompress", &batch_decompress, "decompress tensors with a threadpool", py::arg("files"), py::arg("assignments"), py::call_guard<py::gil_scoped_release>());
 
   py::class_<CompressedFile>(m, "CompressedFile")
-    .def(py::init<const std::string&, const std::vector<int64_t>&, const std::string&, const size_t>());
+    // filename, shape, dtype, buffer_size, compressed_size
+    .def(py::init<const std::string&, const std::vector<int64_t>&, const std::string&, const size_t, const size_t>());
 
   py::class_<AsyncDecompressor>(m, "AsyncDecompressor")
     .def(py::init<const std::string&>(), py::call_guard<py::gil_scoped_release>())
