@@ -66,7 +66,11 @@ with timer("stdlib imports"):
     import timeit
     from pathlib import Path
     from typing import Any, Iterator, Union, Sequence
-    from nyacomp import partition
+
+    try:
+        from nyacomp import partition
+    except ImportError:
+        import partition
 
 # FIXME: make the entire annotate thing configurable
 # and integrate it with timer
@@ -153,7 +157,13 @@ def ints(i: list[int]) -> str:
 def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
     ass = ",".join(map(ints, bins))
     info = [
-        [m["filename"], ints(m["shape"]), m["dtype"], str(m["decompressed_size"]), str(m["compressed_size"])]
+        [
+            m["filename"],
+            ints(m["shape"]),
+            m["dtype"],
+            str(m["decompressed_size"]),
+            str(m["compressed_size"]),
+        ]
         for m in meta
         if m
     ]
@@ -201,7 +211,8 @@ def merge_tensors(tensors: Sequence[Tensory]) -> tuple[list["torch.Tensor"], str
         else:
             subgroups.append(sorted(group))
     merged_tensors = [
-        torch.cat([param[1] for param in group], 0) for group in subgroups
+        group[0][1] if len(group) == 1 else torch.cat([param[1] for param in group], 0)
+        for group in subgroups
     ]
     info = "\n".join(",".join(str(param[0]) for param in group) for group in subgroups)
     return merged_tensors, info
@@ -414,7 +425,6 @@ def stats(times: list[int | float]) -> str:
         "min": min(times),
     }
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
-
 
 
 if __name__ == "__main__":

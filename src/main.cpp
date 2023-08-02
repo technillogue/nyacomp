@@ -47,6 +47,7 @@ int getenv(const char* name, int default_value) {
 
 const bool DEBUG = getenv("DEBUG", 0);
 const bool SILENT = getenv("SILENT", 0);
+const bool DEBUG_MALLOC = getenv("DEBUG_MALLOC", 0);
 
 void debug(const std::string& msg) {
   if (DEBUG)
@@ -58,6 +59,10 @@ void log(const std::string& msg) {
     std::cout << msg << std::endl;
 }
 
+void debug_malloc(const std::string& msg) {
+  if (DEBUG_MALLOC)
+    std::cout << msg << std::endl;
+}
 // size_t round_up_kb(size_t size) { return (size + 1023) & -1024; }
 
 std::string pprint(cudaStream_t stream) {
@@ -275,6 +280,7 @@ public:
     // launch a single thread to allocate the buffer
     alloc_future = std::async(std::launch::async, [this, total_size]() {
       auto start = std::chrono::steady_clock::now();
+      debug_malloc("alocating shared " + pprint(total_size) + " host buffer");
       CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
       log("allocated shared " + pprint(total_size) + " in " + pprint(std::chrono::steady_clock::now() - start));
       is_ready.store(true, std::memory_order_release);
@@ -645,6 +651,7 @@ std::vector<torch::Tensor> batch_decompress(
           tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
           comp_buffer = static_cast<uint8_t*>(tensors[i].data_ptr());
         } else {
+          debug_malloc(prefix + "allocating " + pprint(input_buffer_len) + "compressed device memory");
           CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
           if (!comp_buffer)
             throw std::runtime_error("Could not allocate device memory for compressed data");
