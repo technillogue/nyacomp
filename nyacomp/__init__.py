@@ -115,7 +115,10 @@ def tensor_bytes(tensor: "torch.Tensor") -> bytes:
 
 
 Tensory = Union["torch.Tensor", "torch.nn.Parameter"]
-
+if os.getenv("DOWNLOAD"):
+    HOST = os.getenv("HOST", "localhost:8000")
+else:
+    HOST = ""
 
 def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
@@ -128,7 +131,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
             print(f"compressing parameter to {path}")
             new_size = _nyacomp.compress(data, str(path))
         meta = {
-            "filename": str(path),
+            "filename": str(HOST / path),
             "shape": list(param.shape),
             "dtype": str(param.dtype).removeprefix("torch."),
             "decompressed_size": size,
@@ -141,7 +144,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
             path.unlink()
             path = path.with_suffix(".raw")
             path.open("wb").write(data)
-            meta |= {"filename": str(path), "compressed_size": size}
+            meta |= {"filename": str(HOST / path), "compressed_size": size}
             return meta, size, size
         return meta, size, new_size
     return {}, size, size
@@ -454,7 +457,7 @@ if __name__ == "__main__":
                 import transformers
 
                 model = transformers.CLIPModel.from_pretrained(
-                    "openai/clip-vit-large-patch14", local_files_only=True
+                    "openai/clip-vit-base-patch16", #local_files_only=True
                 )
         torch.save(model, "/tmp/model.pth")
         # model = torch.load("/tmp/clip.pth", map_location="cpu")

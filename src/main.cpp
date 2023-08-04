@@ -476,6 +476,8 @@ int get_output_fd(std::string curl_command) {
   posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
   posix_spawn_file_actions_addclose(&actions, pipefd[0]);
   posix_spawn_file_actions_addclose(&actions, pipefd[1]);
+  // make sure curl stderr goes to our stderr
+  posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
   // spawn curl
   char* curl_args[] = {
     (char*) "sh",
@@ -508,6 +510,7 @@ int SEQUENTIAL = getenv("SEQUENTIAL", 0);
 
 size_t UNPINNED_JOBS = getenv("UNPINNED_JOBS", 2);
 int UNPINNED_THREADS = getenv("UNPINNED_THREADS", 8);
+int DOWNLOAD = getenv("DOWNLOAD", 0);
 
 
 std::vector<torch::Tensor> batch_decompress(
@@ -570,12 +573,15 @@ std::vector<torch::Tensor> batch_decompress(
 
 
       FILE* curl_file = nullptr;
-      if (getenv("DOWNLOAD", 0)) {
+      if (DOWNLOAD) {
         std::stringstream curl_command;
         curl_command << "curl -s ";
+        if (DEBUG)
+          curl_command << "-v ";
         for (auto idx : indexes)
           curl_command << files[idx].filename << " ";
         int curl_fd = get_output_fd(curl_command.str());
+        // we really need to clean up here somehow
         curl_file = fdopen(curl_fd, "r");
       }
 
@@ -675,7 +681,7 @@ std::vector<torch::Tensor> batch_decompress(
         std::string copy_message = "";
 
 
-        if (i != 0 && job_number < UNPINNED_JOBS && thread_id > unpinned_threads) {
+        if (i != 0 && job_number < UNPINNED_JOBS && thread_id > unpinned_threads && !DOWNLOAD) {
           auto start = std::chrono::steady_clock::now();
           std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
           thread_read_time += (std::chrono::steady_clock::now() - start);
@@ -683,7 +689,7 @@ std::vector<torch::Tensor> batch_decompress(
           copy_message = "unpinned ";
           // log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
         } else {
-          if (SEQUENTIAL && curl_file == nullptr)
+          if (SEQUENTIAL && !DOWNLOAD)
             posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
           int num_buffers = std::min(NUM_CIRCLE_BUFFERS, (int)((input_buffer_len + CHUNK_SIZE - 1) / CHUNK_SIZE));
           host_compressed_data = file_loader->get_buffer(CHUNK_SIZE * NUM_CIRCLE_BUFFERS, thread_id);
@@ -699,7 +705,7 @@ std::vector<torch::Tensor> batch_decompress(
           int buffer_id = 0;
           while (already_read < input_buffer_len) {
             size_t to_read = std::min(CHUNK_SIZE, input_buffer_len - already_read);
-            if (WILLNEED && curl_file == nullptr) 
+            if (WILLNEED && !DOWNLOAD) 
               posix_fadvise64(fd, already_read, to_read, POSIX_FADV_WILLNEED);
             buffer_id = chunks % num_buffers;
             if (circle_done_events[buffer_id] == nullptr) {
@@ -730,7 +736,7 @@ std::vector<torch::Tensor> batch_decompress(
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         std::string pretty_chunk_size = pprint(std::min(CHUNK_SIZE, input_buffer_len), 0);
         log(prefix + copy_message + "copied " + std::to_string(chunks) + " " + pretty_chunk_size + " chunks in " + pprint(copy_time) + " (" + pprint_throughput(input_buffer_len, copy_time) + ")");
-        if (curl_file == nullptr)
+        if (!DOWNLOAD)
           fclose(file);
 
         // if (job_number == indexes.size() - 1) {
