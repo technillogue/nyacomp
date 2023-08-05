@@ -388,11 +388,13 @@ struct CompressedFile {
 
 
 std::vector<int64_t> parse_ints(const std::string& str) {
+  // note: tensors can be 0-dimensional, so str can be ""
   std::vector<int64_t> result;
   std::stringstream ss(str);
   std::string dim;
   while (std::getline(ss, dim, ';'))
-    result.push_back(std::stoll(dim));
+    if (dim != "")
+      result.push_back(std::stoll(dim));
   return result;
 }
 
@@ -421,7 +423,7 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(s
   while (std::getline(file, line)) {
     std::stringstream ss(line);
     std::string filename, tensor_shape_str, dtype, size, compressed_size_str;
-    ss >> filename >> tensor_shape_str >> dtype >> size;
+    ss >> filename >> tensor_shape_str >> dtype >> size >> compressed_size_str;
     std::vector<int64_t> tensor_shape = parse_ints(tensor_shape_str);
     size_t decompressed_size = std::stoull(size);
     size_t compressed_size = std::stoull(compressed_size_str);

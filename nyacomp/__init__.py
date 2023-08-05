@@ -120,6 +120,7 @@ if os.getenv("DOWNLOAD"):
 else:
     HOST = ""
 
+
 def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
     size = len(data)
@@ -154,7 +155,9 @@ default_path = Path("./boneless_model.pth")
 
 
 def ints(i: list[int]) -> str:
-    return ";".join(map(str, i))
+    # in the case of shape [], we need something to not fuck up our csv, C++ unpacking is odd
+    # or nvm
+    return ";".join(map(str, i))# or ";"
 
 
 def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
@@ -213,8 +216,10 @@ def merge_tensors(tensors: Sequence[Tensory]) -> tuple[list["torch.Tensor"], str
             subgroups.extend(sorted(bins))
         else:
             subgroups.append(sorted(group))
+    # in case of 0-dim tensors (scalars), we add a dimension before concatenating
+    # then remove it after splitting
     merged_tensors = [
-        group[0][1] if len(group) == 1 else torch.cat([param[1] for param in group], 0)
+        torch.cat([torch.unsqueeze(param[1], 0) for param in group], 0)
         for group in subgroups
     ]
     info = "\n".join(",".join(str(param[0]) for param in group) for group in subgroups)
@@ -229,7 +234,7 @@ def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tenso
         for pair in zip(idxs, torch.tensor_split(tensor, len(idxs), dim=0))
     ]
     # sort by index to recover the original order
-    return [tensor for _, tensor in sorted(unmerged, key=lambda x: x[0])]
+    return [torch.squeeze(tensor,0) for _, tensor in sorted(unmerged, key=lambda x: x[0])]
 
 
 def compress(model: Compressable, path: str | Path = default_path) -> float:
@@ -457,7 +462,7 @@ if __name__ == "__main__":
                 import transformers
 
                 model = transformers.CLIPModel.from_pretrained(
-                    "openai/clip-vit-base-patch16", #local_files_only=True
+                    "openai/clip-vit-base-patch16",  # local_files_only=True
                 )
         torch.save(model, "/tmp/model.pth")
         # model = torch.load("/tmp/clip.pth", map_location="cpu")
