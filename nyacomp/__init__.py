@@ -157,7 +157,7 @@ default_path = Path("./boneless_model.pth")
 def ints(i: list[int]) -> str:
     # in the case of shape [], we need something to not fuck up our csv, C++ unpacking is odd
     # or nvm
-    return ";".join(map(str, i))# or ";"
+    return ";".join(map(str, i))  # or ";"
 
 
 def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
@@ -234,10 +234,13 @@ def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tenso
         for pair in zip(idxs, torch.tensor_split(tensor, len(idxs), dim=0))
     ]
     # sort by index to recover the original order
-    return [torch.squeeze(tensor,0) for _, tensor in sorted(unmerged, key=lambda x: x[0])]
+    return [
+        torch.squeeze(tensor, 0) for _, tensor in sorted(unmerged, key=lambda x: x[0])
+    ]
 
 
 def compress(model: Compressable, path: str | Path = default_path) -> float:
+    global torch
     import numpy as np
     import torch
 
@@ -374,6 +377,7 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
     #     else:
     #         import transformers
     with timer("import torch"):
+        global torch
         import torch
     with timer("boneless torch.load"):
         with annotate("torch.load"):
