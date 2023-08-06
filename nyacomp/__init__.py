@@ -239,6 +239,7 @@ def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tenso
 
 def compress(model: Compressable, path: str | Path = default_path) -> float:
     import numpy as np
+    import torch
 
     sys.modules[__name__].np = np  # import here so tensor_bytes can find it
 
@@ -367,11 +368,13 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
     if isinstance(path, str):
         path = Path(path)
     print("started load_compressed")
-    with timer("import huggingface lib"):
-        if os.getenv("ENV") == "PROD":
-            import diffusers
-        else:
-            import transformers
+    # with timer("import huggingface lib"):
+    #     if os.getenv("ENV") == "PROD":
+    #         import diffusers
+    #     else:
+    #         import transformers
+    with timer("import torch"):
+        import torch
     with timer("boneless torch.load"):
         with annotate("torch.load"):
             print("boneless torch.load")
