@@ -453,7 +453,7 @@ private:
   std::string name;
 };
 
-int get_output_fd(std::string curl_command) {
+int get_output_fd(std::vector<char*> curl_args) {
   /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
   // use posix_spawn to avoid forking a new process
   int pipefd[2];
@@ -481,14 +481,8 @@ int get_output_fd(std::string curl_command) {
   // make sure curl stderr goes to our stderr
   posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
   // spawn curl
-  char* curl_args[] = {
-    (char*) "sh",
-    (char*) "-c",
-    (char*) curl_command.c_str(),
-    NULL
-  };
   pid_t pid;
-  if (posix_spawn(&pid, "/bin/sh", &actions, NULL, curl_args, NULL) != 0)
+  if (posix_spawn(&pid, "/usr/bin/curl", &actions, NULL, curl_args.data(), NULL) != 0)
     throw std::runtime_error("Failed to spawn curl subprocess.");
   // close the write end of the pipe
   close(pipefd[1]);
@@ -576,21 +570,19 @@ std::vector<torch::Tensor> batch_decompress(
 
       FILE* curl_file = nullptr;
       if (DOWNLOAD) {
-        std::stringstream curl_command;
-        curl_command << "curl -s ";
+        std::vector<char*> curl_args = { (char*) "-s"};
         if (DEBUG)
-          curl_command << "-v ";
+          curl_args.push_back((char*) "-v");
         for (auto idx : indexes)
-          curl_command << files[idx].filename << " ";
-        int curl_fd = get_output_fd(curl_command.str());
+          curl_args.push_back(const_cast<char*>(files[idx].filename.c_str()));
+        curl_args.push_back(NULL);  // NULL terminate the arguments list
+        int curl_fd = get_output_fd(curl_args);
         // we really need to clean up here somehow
         curl_file = fdopen(curl_fd, "r");
       }
 
-
       auto thread_start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaSetDevice(0)); // this sets the cuda context
-
 
       std::chrono::microseconds thread_copy_time, thread_decomp_time = std::chrono::milliseconds::zero();
       std::chrono::nanoseconds thread_read_time = std::chrono::nanoseconds::zero();
