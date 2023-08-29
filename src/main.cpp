@@ -38,10 +38,13 @@ namespace py = pybind11;
     }                                                                      \
   } while (false)
 
+char* getenv_str(const char* name, const char* default_value) {
+  auto value = std::getenv(name);
+  return (value == nullptr || value[0] == '\0') ? default_value : value;
+}
 
 int getenv(const char* name, int default_value) {
   auto value = std::getenv(name);
-  // if value is null or "", return default otherwise convert to int
   return (value == nullptr || value[0] == '\0') ? default_value : std::stoi(value);
 }
 
@@ -453,6 +456,8 @@ private:
   std::string name;
 };
 
+const *char DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
+
 int get_output_fd(std::vector<char*> curl_args) {
   /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
   // use posix_spawn to avoid forking a new process
@@ -482,7 +487,8 @@ int get_output_fd(std::vector<char*> curl_args) {
   posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
   // spawn curl
   pid_t pid;
-  if (posix_spawn(&pid, "/usr/bin/curl", &actions, NULL, curl_args.data(), NULL) != 0)
+  // custom curl that doesn't network backpressure on full pipe
+  if (posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL) != 0)
     throw std::runtime_error("Failed to spawn curl subprocess.");
   // close the write end of the pipe
   close(pipefd[1]);
