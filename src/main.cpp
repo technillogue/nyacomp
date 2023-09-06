@@ -40,8 +40,8 @@ namespace py = pybind11;
 
 char* getenv_str(const char* name, const char* default_value) {
   auto value = std::getenv(name);
-  return (value == nullptr || value[0] == '\0') ? default_value : value;
-}
+  return (value == nullptr || value[0] == '\0') ? const_cast<char*>(default_value) : value;
+}}
 
 int getenv(const char* name, int default_value) {
   auto value = std::getenv(name);
@@ -456,7 +456,7 @@ private:
   std::string name;
 };
 
-const *char DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
+const char* DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
 
 int get_output_fd(std::vector<char*> curl_args) {
   /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
