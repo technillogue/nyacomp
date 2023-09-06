@@ -124,31 +124,38 @@ else:
 def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
     size = len(data)
-    if len(data) >= 1 << 1:  # 4 KB #nvm
-        if path.exists() and not os.getenv("RECOMPRESS"):
-            print(f"skipping already existing parameter at {path}")
-            new_size = path.stat().st_size
-        else:
-            print(f"compressing parameter to {path}")
-            new_size = _nyacomp.compress(data, str(path))
-        meta = {
-            "filename": str(HOST / path),
-            "shape": list(param.shape),
-            "dtype": str(param.dtype).removeprefix("torch."),
-            "decompressed_size": size,
-            "compressed_size": new_size,
-        }
-        # torch.nn.parameter.UninitializedParameter
-        param.data = torch.tensor([], dtype=param.dtype)
-        if new_size > size:
-            print("bad compression ratio, replacing with uncompressed", path)
-            path.unlink()
-            path = path.with_suffix(".raw")
-            path.open("wb").write(data)
-            meta |= {"filename": str(HOST / path), "compressed_size": size}
-            return meta, size, size
-        return meta, size, new_size
-    return {}, size, size
+
+    # Helper function to save raw data and adjust meta
+    def save_raw(p: Path, d: bytes, m: dict) -> tuple[dict, int, int]:
+        p.with_suffix(".raw").open("wb").write(d)
+        m |= {"filename": str(HOST / p.with_suffix(".raw")), "compressed_size": size}
+        return m, size, size
+
+    if size < (1 << 1):
+        return {}, size, size
+    if os.getenv("UNCOMPRESSED"):
+        return save_raw(path, data, {})
+
+    if path.exists() and not os.getenv("RECOMPRESS"):
+        print(f"skipping already existing parameter at {path}")
+        new_size = path.stat().st_size
+    else:
+        print(f"compressing parameter to {path}")
+        new_size = _nyacomp.compress(data, str(path))
+    meta = {
+        "filename": str(HOST / path),
+        "shape": list(param.shape),
+        "dtype": str(param.dtype).removeprefix("torch."),
+        "decompressed_size": size,
+        "compressed_size": new_size,
+    }
+    # torch.nn.parameter.UninitializedParameter
+    param.data = torch.tensor([], dtype=param.dtype)
+    if new_size > size:
+        print("bad compression ratio, replacing with uncompressed", path)
+        path.unlink()
+        return save_raw(path, data, meta)
+    return meta, size, new_size
 
 
 default_path = Path("./boneless_model.pth")
