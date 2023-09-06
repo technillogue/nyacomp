@@ -1,7 +1,7 @@
 set -o xtrace
 set -o pipefail
 set -o errexit
-VERSION="0.0.4"
+VERSION="0.0.5"
 # worked with auditwheel for manywheel torch, but not freshly compiled recent-glibc torch
 # nyacomp-$VERSION-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 WHEEL="nyacomp-$VERSION-cp311-cp311-linux_x86_64.whl"
@@ -25,4 +25,4 @@ if [[ "$1" == "release" ]]; then
     find . -name '*.so' | xargs strip --strip-debug # or --strip-unneeded
 fi
 # recurse, high compression, preserve symlinks, oldest timestamp (should be deterministic builds instead)
-zip -r -6 -y -o ../$WHEEL .
+zip -r -9 -y -o ../$WHEEL .

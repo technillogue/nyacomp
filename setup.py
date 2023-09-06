@@ -41,7 +41,7 @@ ext_modules = [
         include_dirs=[NVCOMP_INCLUDE_DIR, CUDA_INCLUDE_DIR],
         libraries=[CUDA_LIB_NAME, NVCOMP_LIB_NAME],
         library_dirs=[NVCOMP_LIB_DIR, CUDA_LIB_DIR],
-        extra_compile_args=["-fvisibility=hidden", "-std=c++14"],
+        extra_compile_args=["-fvisibility=hidden", "-std=c++17"],
     ),
 ]
 
