@@ -62,6 +62,7 @@ with timer("stdlib imports"):
     import json
     import math
     import pickle
+    import pickletools
     import threading
     import timeit
     from pathlib import Path
@@ -318,17 +319,20 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
     orig_tensors = []
 
     def persistent_id(obj: Any) -> int:
-        if isinstance(obj. torch.Tensor):
+        if isinstance(obj, torch.Tensor):
             i = len(orig_tensors)
             orig_tensors.append(obj)
             return i
 
         return None
 
-    pickler = pickle.Pickler(open(path, "wb"), protocol=5)
+    buf = io.BytesIO()
+    pickler = pickle.Pickler(buf, protocol=5)
     pickler.persistent_id = persistent_id
     pickler.dump(model)
-
+    buf.seek(0)
+    # removes unused PUTs 
+    open(path, "wb").write(pickletools.optimize(buf.read()))
     parameters, info = merge_tensors(orig_tensors)  # hmm
     open(path.parent / MERGE_INFO_FNAME, "w").write(info)
 
@@ -349,7 +353,7 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
     to_csv(meta, assignments, str(dir / "meta.csv"))
     meta.append(assignments)  # type: ignore
 
-    pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb")) # unnecessary?
+    pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb"))  # unnecessary?
     print("overall compression ratio:", total_compressed_size / total_size)
     print("saved boneless model to ", path)
     return total_compressed_size / total_size
@@ -467,6 +471,7 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
 
     return model
 
+
 @annotate("load_compressed_pickle")
 def load_compressed_pickle(path: str | Path = default_path) -> Compressable:
     if isinstance(path, str):
@@ -528,18 +533,6 @@ def stats(times: list[int | float]) -> str:
         "min": min(times),
     }
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 if __name__ == "__main__":
