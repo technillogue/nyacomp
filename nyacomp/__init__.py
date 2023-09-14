@@ -72,6 +72,8 @@ with timer("stdlib imports"):
     except ImportError:
         import partition
 
+NUM_THREADS = int(os.getenv("NUM_THREADS") or len(os.sched_getaffinity(0)))
+
 # FIXME: make the entire annotate thing configurable
 # and integrate it with timer
 # just have loglevel
@@ -287,9 +289,8 @@ def compress(model: Compressable, path: str | Path = default_path) -> float:
     for param in orig_parameters:
         param.data = torch.tensor([], dtype=param.dtype)
 
-    threads = int(os.getenv("NUM_THREADS") or os.cpu_count() or 1)
     sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
-    assignments = partition.massage(sizes, threads)
+    assignments = partition.massage(sizes, NUM_THREADS)
 
     to_csv(meta, assignments, str(dir / "meta.csv"))
     meta.append(assignments)  # type: ignore
@@ -299,6 +300,58 @@ def compress(model: Compressable, path: str | Path = default_path) -> float:
     print("saving boneless model to ", path)
 
     torch.save(model, str(path))
+    return total_compressed_size / total_size
+
+
+def compress_pickle(model: Compressable, path: str | Path = default_path) -> float:
+    global torch
+    import numpy as np
+    import torch
+
+    sys.modules[__name__].np = np  # import here so tensor_bytes can find it
+
+    if isinstance(path, str):
+        path = Path(path)
+    dir = path.parent / "nya"
+    dir.mkdir(exist_ok=True)
+
+    orig_tensors = []
+
+    def persistent_id(obj: Any) -> int:
+        if isinstance(obj. torch.Tensor):
+            i = len(orig_tensors)
+            orig_tensors.append(obj)
+            return i
+
+        return None
+
+    pickler = pickle.Pickler(open(path, "wb"), protocol=5)
+    pickler.persistent_id = persistent_id
+    pickler.dump(model)
+
+    parameters, info = merge_tensors(orig_tensors)  # hmm
+    open(path.parent / MERGE_INFO_FNAME, "w").write(info)
+
+    total_size = 0.0
+    total_compressed_size = 0
+    meta = []
+
+    for i, param in enumerate(tensors):
+        param_path = dir / f"{i}.gz"
+        param_meta, size, new_size = compress_parameter(param, param_path)
+        meta.append(param_meta)
+        total_size += size
+        total_compressed_size += new_size
+
+    sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
+    assignments = partition.massage(sizes, NUM_THREADS)
+
+    to_csv(meta, assignments, str(dir / "meta.csv"))
+    meta.append(assignments)  # type: ignore
+
+    pickle.dump(meta, open(str(dir / "metadata.pkl"), "wb")) # unnecessary?
+    print("overall compression ratio:", total_compressed_size / total_size)
+    print("saved boneless model to ", path)
     return total_compressed_size / total_size
 
 
@@ -339,13 +392,12 @@ def get_args(path: Path) -> tuple[list[_nyacomp.CompressedFile], list[list[int]]
         for meta in real_meta
     ]
 
-    threads = int(os.getenv("NUM_THREADS") or os.cpu_count() or 1)
     print(
-        f"assignments in pickle are for {len(assignments)} threads, we have {threads} threads"
+        f"assignments in pickle are for {len(assignments)} threads, we have {NUM_THREADS} threads"
     )
-    if len(assignments) != threads or os.getenv("REDO_PARTITION"):
+    if len(assignments) != NUM_THREADS or os.getenv("REDO_PARTITION"):
         sizes = tuple(meta["compressed_size"] for meta in real_meta)
-        assignments = partition.massage(sizes, threads)
+        assignments = partition.massage(sizes, NUM_THREADS)
 
     chunk_size = 1 << int(os.getenv("CHUNK_SIZE") or 20)
     first_sizes = [real_meta[bin[0]]["decompressed_size"] for bin in assignments]
@@ -415,6 +467,35 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
 
     return model
 
+@annotate("load_compressed_pickle")
+def load_compressed_pickle(path: str | Path = default_path) -> Compressable:
+    if isinstance(path, str):
+        path = Path(path)
+    print("started load_compressed")
+    with timer("import torch"):
+        global torch
+        import torch
+
+    lazy_tensors = {}
+
+    def persistent_load(id: int) -> "torch.Tensor":
+        # this could be a device=meta, but we want to set t.data later on
+        lazy_tensors[i] = t = torch.tensor([])
+        return t
+
+    unpickler = pickle.Unpickler(open(path, "rb"))
+    unpickler.persistent_load = persistent_load
+    with timer("unpickling"):
+        model = unpickler.load()
+    with timer("load tensors"):
+        tensors = get_tensors(path)
+
+    real_tensors = split_tensors(tensors, open(path.parent / MERGE_INFO_FNAME).read())
+    with timer("setting params"):
+        for idx, tensor in enumerate(real_tensors):
+            lazy_tensors[idx].data = tensor
+    return model
+
 
 def with_cleanup(path: Path) -> None:
     prev_size = torch.cuda.memory.memory_reserved()
@@ -447,6 +528,18 @@ def stats(times: list[int | float]) -> str:
         "min": min(times),
     }
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 if __name__ == "__main__":

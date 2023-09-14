@@ -406,10 +406,40 @@ std::vector<int64_t> parse_ints(const std::string& str) {
 // just one line forthread indexes separated by spaces
 
 
+std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(std::string url) {
+  // download file to a buffer and turn it into a stringstream
+  auto start = std::chrono::steady_clock::now();
+  // download file to /tmp/nya.csv with curl
+  // posix_spawn_file_actions_t actions;
+  // posix_spawn_file_actions_init(&actions);
+  // posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, "/tmp/nya.csv", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  // posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
+  // std::vector<char*> curl_args = { (char*) "-s", (char*) url.c_str() };
+  // pid_t pid;
+  // if (posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL) != 0)
+  //   throw std::runtime_error("Failed to spawn curl subprocess.");
+  // int status;
+  // waitpid(pid, &status, 0);
+  // if (status != 0)
+  //   throw std::runtime_error("Failed to download file: " + url);
+
+  int fd = get_output_fd({ (char*) "-s", (char*) url.c_str() });
+  // create stringstream from fd
+  std::stringstream file;
+  file << fd;
+  // parse the file
+  return parse_csv(file);  
+}
+
+
 std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(std::string fname) {
+    auto file = std::ifstream(fname);
+    return parse_csv(file)
+}
+
+std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> parse_csv(std::istream file) {
   // filename,tensor_shape,dtype,decompressed_size; for example,
   // 1.gz,224;224,float32,50176
-  auto file = std::ifstream(fname);
   std::string line;
   std::vector<std::vector<int>> thread_to_idx;
   {
