@@ -57,6 +57,7 @@ else:
 
 with timer("stdlib imports"):
     import ctypes
+    import io
     import itertools as it
     import gc
     import json
@@ -316,12 +317,12 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
-    orig_tensors = []
+    orig_tensors: list[torch.Tensor] = []
 
-    def persistent_id(obj: Any) -> int:
+    def persistent_id(obj: Any) -> int | None:
         if isinstance(obj, torch.Tensor):
             i = len(orig_tensors)
-            orig_tensors.append(obj)
+            orig_tensors.append(obj.to("cpu"))
             return i
 
         return None
@@ -340,7 +341,7 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
     total_compressed_size = 0
     meta = []
 
-    for i, param in enumerate(tensors):
+    for i, param in enumerate(parameters):
         param_path = dir / f"{i}.gz"
         param_meta, size, new_size = compress_parameter(param, param_path)
         meta.append(param_meta)
@@ -485,7 +486,7 @@ def load_compressed_pickle(path: str | Path = default_path) -> Compressable:
 
     def persistent_load(id: int) -> "torch.Tensor":
         # this could be a device=meta, but we want to set t.data later on
-        lazy_tensors[i] = t = torch.tensor([])
+        lazy_tensors[id] = t = torch.tensor([])
         return t
 
     unpickler = pickle.Unpickler(open(path, "rb"))
