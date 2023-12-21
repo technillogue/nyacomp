@@ -101,19 +101,19 @@ std::string pprint(size_t bytes, int precision = 2) {
 }
 
 std::string pprint_throughput(size_t bytes, std::chrono::duration<int64_t, std::nano> duration) {
-  return pprint(bytes * 1e9 / std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()) + "/s";
+  auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+  if (ns == 0)
+    return pprint(bytes) + "/0s";
+  return pprint(bytes * 1e9 / ns) + "/s";
 }
 
 const bool NOTIME = getenv("NOTIME", 0);
 
-std::chrono::steady_clock::time_point now() {
+std::chrono::steady_clock::time_point maybe_now() {
   if (NOTIME)
     return std::chrono::steady_clock::time_point();
   return std::chrono::steady_clock::now();
 }
-
-
-
 
 std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
@@ -709,9 +709,9 @@ std::vector<torch::Tensor> batch_decompress(
 
 
         if (i != 0 && job_number < UNPINNED_JOBS && thread_id > unpinned_threads && !DOWNLOAD) {
-          auto start = std::chrono::steady_clock::now();
+          auto start = maybe_now();
           std::tie(host_compressed_data, input_buffer_len) = load_file_wrapper(files[i].filename);
-          thread_read_time += (std::chrono::steady_clock::now() - start);
+          thread_read_time += (maybe_now() - start);
           CUDA_CHECK(cudaMemcpyAsync(comp_buffer, host_compressed_data, input_buffer_len, cudaMemcpyDefault, stream));
           copy_message = "unpinned ";
           // log(prefix + "NOT PINNED copied " + pprint(input_buffer_len) + " bytes to device in " + pprint(copy_time) + " (total " + pprint_throughput(input_buffer_len, copy_time) + ")");
@@ -740,14 +740,14 @@ std::vector<torch::Tensor> batch_decompress(
               CUDA_CHECK(cudaEventCreateWithFlags(&circle_done_events[buffer_id], cudaEventDisableTiming));
             }
             else {
-              auto start = std::chrono::steady_clock::now();
+              auto start = maybe_now();
               CUDA_CHECK(cudaEventSynchronize(circle_done_events[buffer_id])); // wait for previous copy to finish before changing host_compressed_data
-              sync_time += std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start);
+              sync_time += std::chrono::duration_cast<std::chrono::microseconds>(maybe_now() - start);
             }
             // replace this part with reading from a connection, or an existing fully downloaded buffer
-            auto start = std::chrono::steady_clock::now();
+            auto start = maybe_now();
             auto fread_result = fread(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read, 1, file);
-            thread_read_time += (std::chrono::steady_clock::now() - start);
+            thread_read_time += (maybe_now() - start);
             if (fread_result != 1) {
               perror("freading file");
               throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + "): " + std::to_string(fread_result) + ", eof: " + std::to_string(feof(file)));
