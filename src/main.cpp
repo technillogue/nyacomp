@@ -576,7 +576,7 @@ std::vector<torch::Tensor> batch_decompress(
 
   // initialize the primary context 
   // see https://forums.developer.nvidia.com/t/cuda-context-and-threading/26625/6 for horrors untold
-  {auto start = std::chrono::steady_clock::now();
+  {auto start = std::chrono::steady_clock::now(); 
   CUDA_CHECK(cudaSetDevice(0));
   debug("cudaSetDevice to initialize primary context took " + pprint(std::chrono::steady_clock::now() - start));}
 
@@ -635,6 +635,9 @@ std::vector<torch::Tensor> batch_decompress(
 
       std::vector<cudaEvent_t> circle_done_events(NUM_CIRCLE_BUFFERS, nullptr);
 
+      // reuse the same comp_buffer for all jobs 
+      uint8_t* saved_comp_buffer;
+
       for (size_t job_number = 0; job_number < indexes.size(); job_number++) {
         int i = indexes[job_number];
         auto prefix = "thread " + std::to_string(thread_id) + ", tensor " + std::to_string(i) + " (job " + std::to_string(job_number) + "): ";
@@ -684,10 +687,13 @@ std::vector<torch::Tensor> batch_decompress(
           tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
           comp_buffer = static_cast<uint8_t*>(tensors[i].data_ptr());
         } else {
-          debug_malloc(prefix + "allocating " + pprint(input_buffer_len) + "compressed device memory");
-          CUDA_CHECK(cudaMallocAsync(&comp_buffer, input_buffer_len, stream));
-          if (!comp_buffer)
-            throw std::runtime_error("Could not allocate device memory for compressed data");
+          if (saved_comp_buffer == nullptr) {
+            debug_malloc(prefix + "allocating " + pprint(input_buffer_len) + "compressed device memory");
+            CUDA_CHECK(cudaMallocAsync(&saved_comp_buffer, input_buffer_len, stream));
+            if (!saved_comp_buffer)
+              throw std::runtime_error("Could not allocate device memory for compressed data");
+          }
+          comp_buffer = saved_comp_buffer;
         }
         auto copy_done = thread_copy_done[thread_id];
         if (copy_done != nullptr) {
@@ -833,12 +839,17 @@ std::vector<torch::Tensor> batch_decompress(
           ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
 
           log(prefix + "decompressed in " + pprint(decomp_time) + ", freeing with stream " + stream_name + "");
-          // need to not free comp_buffer until the decompression is complete, so we should 
-          CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
-          if (SYNC_FREE)
-            CUDA_CHECK(cudaStreamSynchronize(stream));
+          // // need to not free comp_buffer until the decompression is complete, so we should 
+          // CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
+          // if (SYNC_FREE)
+          //   CUDA_CHECK(cudaStreamSynchronize(stream));
           thread_decomp_time += decomp_time; // shrug
         }
+        log(prefix + "freeing with stream " + stream_name + "");
+        // need to not free comp_buffer until the decompression is complete, so we should 
+        CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
+        if (SYNC_FREE)  
+          CUDA_CHECK(cudaStreamSynchronize(stream));
         auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - file_start_time).count();
 
         log(prefix + "processed in " + std::to_string(file_elapsed_time) + " ms");
