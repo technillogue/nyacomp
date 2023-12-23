@@ -4,8 +4,8 @@ import importlib.util
 import os
 import sys
 
-os.environ["HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+# os.environ["HUB_OFFLINE"] = "1"
+# os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 if not os.getenv("NO_HIDE_MODULES"):
     hidden = {"jax", "flax", "accelerate", "wandb"}
@@ -332,7 +332,7 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
     pickler.persistent_id = persistent_id
     pickler.dump(model)
     buf.seek(0)
-    # removes unused PUTs 
+    # removes unused PUTs
     open(path, "wb").write(pickletools.optimize(buf.read()))
     parameters, info = merge_tensors(orig_tensors)  # hmm
     open(path.parent / MERGE_INFO_FNAME, "w").write(info)
@@ -536,7 +536,7 @@ def stats(times: list[int | float]) -> str:
     return " ".join(f"{k}: {round(v, 4)}" for k, v in _stats.items())
 
 
-if __name__ == "__main__":
+if __name__ == "__main__" or os.getenv("RUN_MAIN"):
     with timer("import torch"):
         import torch
     COMPRESS = os.getenv("COMPRESS")
@@ -552,11 +552,13 @@ if __name__ == "__main__":
                 # thing here about AIT
                 # needs to be compressed for the same diffusers version
                 # (or use state dict...)
-                model = diffusers.StableDiffusionPipeline.from_pretrained(
-                    "CompVis/stable-diffusion-v1-4",
+                model = diffusers.DiffusionPipeline.from_pretrained(
+                    # "CompVis/stable-diffusion-v1-4",
+                    "/home/sylv/r8/cog-sdxl/sdxl-cache",
                     torch_dtype=torch.float16,
-                    revision="fp16",
-                    safety_checker=None,
+                    variant="fp16",
+                    use_safetensors=True,
+                    # safety_checker=None,
                     local_files_only=True,
                 )
             else:

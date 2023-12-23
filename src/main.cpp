@@ -504,7 +504,6 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_remot
 }
 
 
-
 class SyncedGdeflateManager: public GdeflateManager {
 public:
   SyncedGdeflateManager(int chunk_size, nvcompBatchedGdeflateOpts_t compression_level, cudaStream_t stream, std::string name)
@@ -576,6 +575,7 @@ std::vector<torch::Tensor> batch_decompress(
   log("Using " + std::to_string(num_threads) + " threads and " + std::to_string(streams_per_thread) + " streams per thread for " + std::to_string(num_files) + " files");
 
   // initialize the primary context 
+  // see https://forums.developer.nvidia.com/t/cuda-context-and-threading/26625/6 for horrors untold
   {auto start = std::chrono::steady_clock::now();
   CUDA_CHECK(cudaSetDevice(0));
   debug("cudaSetDevice to initialize primary context took " + pprint(std::chrono::steady_clock::now() - start));}
@@ -902,6 +902,7 @@ std::vector<torch::Tensor> batch_decompress(
   auto end_time = std::chrono::steady_clock::now();
   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
+  log("Processing throughput: " + pprint_throughput(total_buffer_size, end_time - start_time));
   log("Total processing time: " + std::to_string(elapsed_time) + " ms for " + std::to_string(num_files) + " tensors on " + std::to_string(num_threads) + " threads, " + std::to_string(num_streams) + " streams");
   log("Total copy time: " + std::to_string(total_copy_time.count()) + "[ms], total decomp time: " + std::to_string(total_decomp_time.count()) + "[ms], total read time: " + std::to_string(total_read_time.count()) + "[ms]");
   log("Average copy time per file: " + std::to_string((total_copy_time / num_files).count()) + "[ms], average decomp time per file: " + std::to_string((total_decomp_time / num_files).count()) + "[ms]");
