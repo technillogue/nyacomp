@@ -557,10 +557,6 @@ std::vector<torch::Tensor> batch_decompress(
   if (files.size() == 0)
     throw std::invalid_argument("Input vector should be non-empty.");
   
-  size_t total_decompressed_size = 0;
-  for (auto& file : files)
-    total_decompressed_size += file.decompressed_size;
-
   int num_files = static_cast<int>(files.size());
   int num_threads = std::min(num_files, NUM_THREADS);
 
@@ -631,7 +627,7 @@ std::vector<torch::Tensor> batch_decompress(
       std::chrono::microseconds thread_copy_time, thread_decomp_time = std::chrono::milliseconds::zero();
       std::chrono::nanoseconds thread_read_time = std::chrono::nanoseconds::zero();
       std::vector<std::shared_ptr<nvcomp::nvcompManagerBase>> managers(streams_per_thread, nullptr);
-      int64_t total_decompressed_size = 0;
+      int64_t thread_decompressed_size = 0;
 
       // uint8_t* scratch_buffer = nullptr;
       // size_t scratch_buffer_size = 0;
@@ -660,7 +656,7 @@ std::vector<torch::Tensor> batch_decompress(
         // convert stream to hex string for logging
         std::string stream_name = pprint(stream);
 
-        total_decompressed_size += files[i].decompressed_size;
+        thread_decompressed_size  += files[i].decompressed_size;
 
         uint8_t* host_compressed_data;
         size_t input_buffer_len;
@@ -885,8 +881,8 @@ std::vector<torch::Tensor> batch_decompress(
       auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
 
-      int throughput = std::round((float)total_decompressed_size / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
-      log("thread " + std::to_string(thread_id) + " processed " + std::to_string(total_decompressed_size / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
+      int throughput = std::round((float)thread_decompressed_size  / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
+      log("thread " + std::to_string(thread_id) + " processed " + std::to_string(thread_decompressed_size  / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
       // std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)*1000));
 
       
@@ -935,6 +931,9 @@ std::vector<torch::Tensor> batch_decompress(
   CUDA_CHECK(cudaDeviceSynchronize());
   log("Sync time: " + pprint(std::chrono::steady_clock::now() - sync_start));
 
+  size_t total_decompressed_size = 0;
+  for (auto& file : files)
+    total_decompressed_size += file.decompressed_size;
 
   auto end_time = std::chrono::steady_clock::now();
   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
@@ -970,7 +969,10 @@ public:
   AsyncDecompressor(std::string fname) {
     std::vector<CompressedFile> files;
     std::vector<std::vector<int>> thread_to_idx;
-    std::tie(thread_to_idx, files) = load_csv(fname);
+    if (DOWNLOAD)
+        std::tie(thread_to_idx, files) = load_remote_csv(fname);
+    else
+        std::tie(thread_to_idx, files) = load_csv(fname);
     // ideally do some more validation
 
     size_t num_threads = std::min(static_cast<int>(files.size()), NUM_THREADS);

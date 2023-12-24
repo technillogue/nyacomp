@@ -348,6 +348,8 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
         total_size += size
         total_compressed_size += new_size
 
+    # at this point we can concatenate files based on thread assignment for upload
+
     sizes = tuple(param_meta["compressed_size"] for param_meta in meta if param_meta)
     assignments = partition.massage(sizes, NUM_THREADS)
 
