@@ -556,6 +556,10 @@ std::vector<torch::Tensor> batch_decompress(
 
   if (files.size() == 0)
     throw std::invalid_argument("Input vector should be non-empty.");
+  
+  size_t total_decompressed_size = 0;
+  for (auto& file : files)
+    total_decompressed_size += file.decompressed_size;
 
   int num_files = static_cast<int>(files.size());
   int num_threads = std::min(num_files, NUM_THREADS);
@@ -935,7 +939,7 @@ std::vector<torch::Tensor> batch_decompress(
   auto end_time = std::chrono::steady_clock::now();
   auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
 
-  log("Processing throughput: " + pprint_throughput(total_buffer_size, end_time - start_time));
+  log("Processing throughput: " + pprint_throughput(total_decompressed_size, end_time - start_time));
   log("Total processing time: " + std::to_string(elapsed_time) + " ms for " + std::to_string(num_files) + " tensors on " + std::to_string(num_threads) + " threads, " + std::to_string(num_streams) + " streams");
   log("Total copy time: " + std::to_string(total_copy_time.count()) + "[ms], total decomp time: " + std::to_string(total_decomp_time.count()) + "[ms], total read time: " + std::to_string(total_read_time.count()) + "[ms]");
   log("Average copy time per file: " + std::to_string((total_copy_time / num_files).count()) + "[ms], average decomp time per file: " + std::to_string((total_decomp_time / num_files).count()) + "[ms]");
@@ -945,7 +949,7 @@ std::vector<torch::Tensor> batch_decompress(
   file << "{\"elapsed_time\":" << elapsed_time << ",\"num_files\":" << num_files;
   file << ",\"num_threads\":" << num_threads << ",\"num_streams\":" << num_streams;
   file << ",\"total_copy_time\":" << total_copy_time.count() << ",\"total_decomp_time\":" << total_decomp_time.count();
-  file << ",\"total_file_size\":" << total_buffer_size << ",\"chunk_size\":" << CHUNK_SIZE;
+  file << ",\"total_file_size\":" << total_decompressed_size << ",\"chunk_size\":" << CHUNK_SIZE;
   file << ",\"sleep\":" << getenv("SLEEP", 3) << ",\"total_read_time\":" << total_read_time.count();
   file << ", \"name\":\"" << (std::getenv("NAME") ? std::getenv("NAME") : "unknown") << "\"";
   file << "}" << std::endl;
