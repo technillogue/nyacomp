@@ -74,6 +74,12 @@ std::string pprint(cudaStream_t stream) {
   return ss.str();
 }
 
+std::string pprint(uint8_t* ptr) {
+  std::stringstream ss;
+  ss << std::hex << ptr;
+  return ss.str();
+}
+
 std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
   if (duration < std::chrono::microseconds(1000))
     return std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()) + "µs";
@@ -531,6 +537,7 @@ size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
 int TENSOR_EARLY = getenv("TENSOR_EARLY", 0);
 int SYNC_DECOMPRESS = getenv("SYNC_DECOMPRESS", 0);
 int SYNC_FREE = getenv("SYNC_FREE", 0);
+int REUSE_COMP_BUFFER = getenv("REUSE_COMP_BUFFER", 0);
 int NUM_CIRCLE_BUFFERS = getenv("NUM_CIRCLE_BUFFERS", 4);
 
 int WILLNEED = getenv("WILLNEED", 0);
@@ -636,7 +643,8 @@ std::vector<torch::Tensor> batch_decompress(
       std::vector<cudaEvent_t> circle_done_events(NUM_CIRCLE_BUFFERS, nullptr);
 
       // reuse the same comp_buffer for all jobs 
-      uint8_t* saved_comp_buffer;
+      uint8_t* saved_comp_buffer = nullptr;
+      size_t saved_comp_buffer_size = 0;
 
       for (size_t job_number = 0; job_number < indexes.size(); job_number++) {
         int i = indexes[job_number];
@@ -686,14 +694,22 @@ std::vector<torch::Tensor> batch_decompress(
         if (!files[i].is_compressed) {
           tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
           comp_buffer = static_cast<uint8_t*>(tensors[i].data_ptr());
-        } else {
+        } else if (REUSE_COMP_BUFFER) {
+          if (saved_comp_buffer != nullptr && saved_comp_buffer_size < input_buffer_len) {
+            debug_malloc(prefix + "previous comp_buffer size " + pprint(saved_comp_buffer_size) + " is smaller than current " + pprint(input_buffer_len) + ", freeing " + pprint(saved_comp_buffer));
+            CUDA_CHECK(cudaFree(saved_comp_buffer));
+            saved_comp_buffer_size = 0;
+          }          
           if (saved_comp_buffer == nullptr) {
             debug_malloc(prefix + "allocating " + pprint(input_buffer_len) + "compressed device memory");
             CUDA_CHECK(cudaMallocAsync(&saved_comp_buffer, input_buffer_len, stream));
             if (!saved_comp_buffer)
               throw std::runtime_error("Could not allocate device memory for compressed data");
+            saved_comp_buffer_size = input_buffer_len;
           }
           comp_buffer = saved_comp_buffer;
+        } else {
+          CUDA_CHECK(cudaMallocAsync(&comp_buffer, files[i].compressed_size, stream));
         }
         auto copy_done = thread_copy_done[thread_id];
         if (copy_done != nullptr) {
@@ -839,22 +855,28 @@ std::vector<torch::Tensor> batch_decompress(
           ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
 
           log(prefix + "decompressed in " + pprint(decomp_time) + ", freeing with stream " + stream_name + "");
-          // // need to not free comp_buffer until the decompression is complete, so we should 
-          // CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
-          // if (SYNC_FREE)
-          //   CUDA_CHECK(cudaStreamSynchronize(stream));
+          if (!REUSE_COMP_BUFFER) {
+            // need to not free comp_buffer until the decompression is complete, so we should 
+            CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
+            if (SYNC_FREE)
+              CUDA_CHECK(cudaStreamSynchronize(stream));
+          }
           thread_decomp_time += decomp_time; // shrug
         }
-        log(prefix + "freeing with stream " + stream_name + "");
-        // need to not free comp_buffer until the decompression is complete, so we should 
-        CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
-        if (SYNC_FREE)  
-          CUDA_CHECK(cudaStreamSynchronize(stream));
+
         auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - file_start_time).count();
 
         log(prefix + "processed in " + std::to_string(file_elapsed_time) + " ms");
         thread_copy_time += copy_time;
         
+      }
+      if (REUSE_COMP_BUFFER) {
+        cudaStream_t stream = streams[thread_id][0];
+        log("thread " + std::to_string(thread_id) + "freeing with stream " + pprint(stream) + "");
+        // need to not free comp_buffer until the decompression is complete, so we should 
+        CUDA_CHECK(cudaFreeAsync(saved_comp_buffer, stream));
+        if (SYNC_FREE)
+          CUDA_CHECK(cudaStreamSynchronize(stream));
       }
       auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);

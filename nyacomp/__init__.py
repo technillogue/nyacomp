@@ -540,7 +540,7 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
     with timer("import torch"):
         import torch
     COMPRESS = os.getenv("COMPRESS")
-    if os.getenv("ENV") == "PROD":
+    if os.getenv("ENV") == "PROD" or os.getenv("DIFFUSERS"):
         model_path = Path("./data/boneless_model.pth")
     else:
         model_path = Path("./data/boneless_clip.pth")
