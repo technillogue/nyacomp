@@ -4,10 +4,12 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <signal.h>
 #include <spawn.h>
 #include <sstream>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <thread>
 #include <vector>
 
@@ -178,57 +180,69 @@ size_t get_fsize(int fd) {
 }
 
 
+void widen_pipe(int fd) {
+  // check proc/sys/fs/pipe-max-size, if we can't read it default to 1MB
+  // cf https://github.com/coreweave/tensorizer/blob/main/tensorizer/_wide_pipes.py#L75
+  int max_pipe_size;
+  std::ifstream file("/proc/sys/fs/pipe-max-size");
+  if (file.is_open())
+    file >> max_pipe_size;
+  else
+    max_pipe_size = 1048576;
+  if (fcntl(fd, F_SETPIPE_SZ, max_pipe_size) == -1)
+    throw std::runtime_error("Failed to set pipe buffer size.");
+}
+
 const char* DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
 int DOWNLOAD_LOG = getenv("DOWNLOAD_LOG", 0);
 
-int get_output_fd(std::vector<char*> curl_args) {
-  /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
-  // use posix_spawn to avoid forking a new process
-  int pipefd[2];
-  if (pipe(pipefd) != 0)
-    throw std::runtime_error("Failed to create pipe for curl subprocess.");
-  // check proc/sys/fs/pipe-max-size, if we can't read it default to 1MB
-  // cf https://github.com/coreweave/tensorizer/blob/main/tensorizer/_wide_pipes.py#L75
-  int pipe_max_size;
-  {
-    std::ifstream file("/proc/sys/fs/pipe-max-size");
-    if (file.is_open())
-      file >> pipe_max_size;
-    else
-      pipe_max_size = 1048576;
+class DownloadProc {
+public:
+  FILE* download(std::vector<char*> curl_args) {
+    /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
+    // use posix_spawn to avoid forking
+    int pipefd[2];
+    if (pipe(pipefd) != 0)
+      throw std::runtime_error("Failed to create pipe for curl subprocess.");
+    widen_pipe(pipefd[0]);
+    debug("using downloader path: " + std::string(DOWNLOADER_PATH));
+    // set up posix_spawn
+    posix_spawn_file_actions_t actions;
+    posix_spawn_file_actions_init(&actions);
+    posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
+    posix_spawn_file_actions_addclose(&actions, pipefd[0]);
+    posix_spawn_file_actions_addclose(&actions, pipefd[1]);
+    if (DOWNLOAD_LOG) {
+      int log_fd = open("/tmp/downloader.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (log_fd == -1)
+        throw std::runtime_error("Failed to open /tmp/downloader.log");
+      posix_spawn_file_actions_adddup2(&actions, log_fd, STDERR_FILENO);
+      posix_spawn_file_actions_addclose(&actions, log_fd);
+    } else
+      posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+    // spawn curl or custom curl that doesn't network backpressure on full pipe
+    int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL);
+    if (retcode != 0) {
+      debug("downloader args: " + pprint(curl_args));
+      throw std::runtime_error("Failed to spawn curl subprocess. Exit code: " + std::to_string(retcode));
+    }
+    // close write end of the pipe
+    close(pipefd[1]);
+    // return read end of the pipe
+    return fdopen(pipefd[0], "r");
   }
-  // set pipe buffer size
-  if (fcntl(pipefd[0], F_SETPIPE_SZ, pipe_max_size) == -1)
-    throw std::runtime_error("Failed to set pipe buffer size.");
-  debug("using downloader path: " + std::string(DOWNLOADER_PATH));
-  // set up posix_spawn
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
-  posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
-  posix_spawn_file_actions_addclose(&actions, pipefd[0]);
-  posix_spawn_file_actions_addclose(&actions, pipefd[1]);
-  if (DOWNLOAD_LOG) {
-    int log_fd = open("/tmp/downloader.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (log_fd == -1)
-      throw std::runtime_error("Failed to open /tmp/downloader.log");
-    posix_spawn_file_actions_adddup2(&actions, log_fd, STDERR_FILENO);
-    posix_spawn_file_actions_addclose(&actions, log_fd);
-  } else {
-    posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+
+  ~DownloadProc() {
+    if (pid == -1)
+      return;
+    log("killing downloader process");
+    kill(pid, SIGTERM);
+    waitpid(pid, NULL, 0);
   }
-  // spawn curl
-  pid_t pid;
-  // custom curl that doesn't network backpressure on full pipe
-  int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL);
-  if (retcode != 0) {
-    debug("downloader args: " + pprint(curl_args));
-    throw std::runtime_error("Failed to spawn curl subprocess. Exit code: " + std::to_string(retcode));
-  }
-  // close the write end of the pipe
-  close(pipefd[1]);
-  // return the read end of the pipe
-  return pipefd[0];
-}
+
+private:
+  pid_t pid = -1;
+};
 
 
 int compress(py::bytes pybytes, const std::string filename) {
@@ -521,11 +535,11 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(s
 std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_remote_csv(std::string url) {
   // download file to a buffer and turn it into a stringstream
   auto start = std::chrono::steady_clock::now();
-  int fd = get_output_fd({ (char*) "-s", (char*) url.c_str() });
-  log("downloaded remote csv " + url + " in " + pprint(std::chrono::steady_clock::now() - start));
+  DownloadProc downloader;
+  FILE* output = downloader.download({ (char*) "-s", (char*) url.c_str() });
+  debug("launched csv download, proceeding with parsing");
   // create stringstream from fd
   std::stringstream file;
-  FILE* output = fdopen(fd, "r");
   // read the entire file
   while (true) {
     char buf[1024];
@@ -537,12 +551,13 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_remot
 
   file.seekg(0, std::ios::end);
   auto size = file.tellg();
-  log("read " + pprint(size) + " bytes from remote csv " + url);
+  log("read " + pprint(size) + " bytes from remote csv " + url + " in " + pprint(std::chrono::steady_clock::now() - start));
   file.seekg(0, std::ios::beg);
   
 
   if (DEBUG) {
     std::cout << file.str(); 
+    log("dumped csv file to stdout, resetting file pointer");
     file.seekg(0, std::ios::beg);
   }
   // parse the file
@@ -619,7 +634,7 @@ std::vector<torch::Tensor> batch_decompress(
   int streams_per_thread = num_streams / num_threads;
   std::vector<std::vector<cudaStream_t>> streams = std::vector<std::vector<cudaStream_t>>(num_threads, std::vector<cudaStream_t>(streams_per_thread));
 
-  log("Using " + std::to_string(num_threads) + " threads and " + std::to_string(streams_per_thread) + " streams per thread for " + std::to_string(num_files) + " files");
+  log("using " + std::to_string(num_threads) + " threads and " + std::to_string(streams_per_thread) + " streams per thread for " + std::to_string(num_files) + " files");
 
   // initialize the primary context 
   // see https://forums.developer.nvidia.com/t/cuda-context-and-threading/26625/6 for horrors untold
@@ -649,6 +664,7 @@ std::vector<torch::Tensor> batch_decompress(
 
 
       FILE* curl_file = nullptr;
+      DownloadProc downloader;
       if (DOWNLOAD) {
         std::vector<char*> curl_args = { (char*) "-s"};
         if (DEBUG)
@@ -656,9 +672,7 @@ std::vector<torch::Tensor> batch_decompress(
         for (auto idx : indexes)
           curl_args.push_back(const_cast<char*>(files[idx].filename.c_str()));
         curl_args.push_back(NULL);  // NULL terminate the arguments list
-        int curl_fd = get_output_fd(curl_args);
-        // we really need to clean up here somehow
-        curl_file = fdopen(curl_fd, "r");
+        curl_file = downloader.download(curl_args);
       }
 
       auto thread_start = std::chrono::steady_clock::now();

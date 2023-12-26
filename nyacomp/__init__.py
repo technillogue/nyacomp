@@ -49,14 +49,8 @@ with timer("import _nyacomp"):
 
 if not os.getenv("NO_PRELOAD"):
     path = os.getenv("PRELOAD_PATH", "data/nya/meta.csv")
-    with timer("proceeding with importing; launching decompression took"):
-        try:
-            decompressor = _nyacomp.AsyncDecompressor(path)
-        except Exception as e:
-            print("augh")
-            raise e
-            sys.exit(2)
-
+    with timer("proceeding with importing; launching decompression"):
+        decompressor = _nyacomp.AsyncDecompressor(path)
 else:
     decompressor = None
 
