@@ -179,6 +179,7 @@ size_t get_fsize(int fd) {
 
 
 const char* DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
+int DOWNLOAD_LOG = getenv("DOWNLOAD_LOG", 0);
 
 int get_output_fd(std::vector<char*> curl_args) {
   /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
@@ -206,8 +207,15 @@ int get_output_fd(std::vector<char*> curl_args) {
   posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
   posix_spawn_file_actions_addclose(&actions, pipefd[0]);
   posix_spawn_file_actions_addclose(&actions, pipefd[1]);
-  // make sure curl stderr goes to our stderr
-  posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
+  if (DOWNLOAD_LOG) {
+    int log_fd = open("/tmp/downloader.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (log_fd == -1)
+      throw std::runtime_error("Failed to open /tmp/downloader.log");
+    posix_spawn_file_actions_adddup2(&actions, log_fd, STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&actions, log_fd);
+  } else {
+    posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+  }
   // spawn curl
   pid_t pid;
   // custom curl that doesn't network backpressure on full pipe

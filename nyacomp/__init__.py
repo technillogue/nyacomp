@@ -50,7 +50,13 @@ with timer("import _nyacomp"):
 if not os.getenv("NO_PRELOAD"):
     path = os.getenv("PRELOAD_PATH", "data/nya/meta.csv")
     with timer("proceeding with importing; launching decompression took"):
-        decompressor = _nyacomp.AsyncDecompressor(path)
+        try:
+            decompressor = _nyacomp.AsyncDecompressor(path)
+        except Exception as e:
+            print("augh")
+            raise e
+            sys.exit(2)
+
 else:
     decompressor = None
 
@@ -426,6 +432,7 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
         except (RuntimeError, ValueError) as e:
             print(f"decompressor.get errored: {e}")
             raise e
+            sys.exit(1)
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
             files, assignments = get_args(path)
