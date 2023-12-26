@@ -4,8 +4,8 @@ import importlib.util
 import os
 import sys
 
-# os.environ["HUB_OFFLINE"] = "1"
-# os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 if not os.getenv("NO_HIDE_MODULES"):
     hidden = {"jax", "flax", "accelerate", "wandb"}
@@ -425,6 +425,7 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
             return tensors
         except (RuntimeError, ValueError) as e:
             print(f"decompressor.get errored: {e}")
+            raise e
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
             files, assignments = get_args(path)
@@ -515,11 +516,11 @@ def with_cleanup(path: Path) -> None:
     freed_size = torch.cuda.memory.memory_reserved()
     print(
         "previous torch mem",
-        prev_size,
+        natsize(prev_size),
         "used mem",
         natsize(used_size),
         "mem after clearing cache",
-        freed_size,
+        natsize(freed_size),
     )
     if torch.cuda.memory.memory_reserved() > prev_size:
         import pdb

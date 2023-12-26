@@ -80,6 +80,15 @@ std::string pprint(uint8_t* ptr) {
   return ss.str();
 }
 
+std::string pprint(std::vector<char*> vec) {
+  std::stringstream ss;
+  ss << "[";
+  for (auto& s : vec)
+    ss << s << ", ";
+  ss << "]";
+  return ss.str();
+}
+
 std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
   if (duration < std::chrono::microseconds(1000))
     return std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(duration).count()) + "µs";
@@ -190,6 +199,7 @@ int get_output_fd(std::vector<char*> curl_args) {
   // set pipe buffer size
   if (fcntl(pipefd[0], F_SETPIPE_SZ, pipe_max_size) == -1)
     throw std::runtime_error("Failed to set pipe buffer size.");
+  debug("using downloader path: " + std::string(DOWNLOADER_PATH));
   // set up posix_spawn
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
@@ -201,8 +211,11 @@ int get_output_fd(std::vector<char*> curl_args) {
   // spawn curl
   pid_t pid;
   // custom curl that doesn't network backpressure on full pipe
-  if (posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL) != 0)
-    throw std::runtime_error("Failed to spawn curl subprocess.");
+  int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL);
+  if (retcode != 0) {
+    debug("downloader args: " + pprint(curl_args));
+    throw std::runtime_error("Failed to spawn curl subprocess. Exit code: " + std::to_string(retcode));
+  }
   // close the write end of the pipe
   close(pipefd[1]);
   // return the read end of the pipe
@@ -504,9 +517,28 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_remot
   log("downloaded remote csv " + url + " in " + pprint(std::chrono::steady_clock::now() - start));
   // create stringstream from fd
   std::stringstream file;
-  file << fd;
+  FILE* output = fdopen(fd, "r");
+  // read the entire file
+  while (true) {
+    char buf[1024];
+    size_t bytes_read = fread(buf, 1, sizeof(buf), output);
+    if (bytes_read == 0)
+      break;
+    file.write(buf, bytes_read);
+  }
+
+  file.seekg(0, std::ios::end);
+  auto size = file.tellg();
+  log("read " + pprint(size) + " bytes from remote csv " + url);
+  file.seekg(0, std::ios::beg);
+  
+
+  if (DEBUG) {
+    std::cout << file.str(); 
+    file.seekg(0, std::ios::beg);
+  }
   // parse the file
-  return parse_csv(file);  
+  return parse_csv(file); 
 }
 
 
@@ -546,7 +578,7 @@ int SEQUENTIAL = getenv("SEQUENTIAL", 0);
 size_t UNPINNED_JOBS = getenv("UNPINNED_JOBS", 2);
 int UNPINNED_THREADS = getenv("UNPINNED_THREADS", 8);
 int DOWNLOAD = getenv("DOWNLOAD", 0);
-
+int REMOTE_CSV = getenv("REMOTE_CSV", DOWNLOAD);
 
 std::vector<torch::Tensor> batch_decompress(
   const std::vector<CompressedFile>& files,
@@ -969,7 +1001,7 @@ public:
   AsyncDecompressor(std::string fname) {
     std::vector<CompressedFile> files;
     std::vector<std::vector<int>> thread_to_idx;
-    if (DOWNLOAD)
+    if (DOWNLOAD && REMOTE_CSV)
         std::tie(thread_to_idx, files) = load_remote_csv(fname);
     else
         std::tie(thread_to_idx, files) = load_csv(fname);
