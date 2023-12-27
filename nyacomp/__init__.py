@@ -507,14 +507,10 @@ def load_compressed_pickle(path: str | Path = default_path) -> Compressable:
             lazy_tensors[idx].data = tensor
     return model
 
-
-def with_cleanup(path: Path) -> None:
+@contextlib.contextmanager
+def cleanup() -> None:
     prev_size = torch.cuda.memory.memory_reserved()
-    model = load_compressed(path)
-    # model.scheduler.alphas_cumprod.to("cpu")
-    # model.text_encoder.text_model.embeddings.to("cpu")
-    model("horse ").images[0].save("/tmp/out.png")
-    del model
+    yield
     gc.collect()
     used_size = torch.cuda.memory.memory_reserved()
     torch.cuda.memory.empty_cache()
@@ -529,9 +525,15 @@ def with_cleanup(path: Path) -> None:
     )
     # if torch.cuda.memory.memory_reserved() > prev_size:
     #     import pdb
-
     #     pdb.set_trace()
 
+
+def with_cleanup(path: Path) -> None:
+    with cleanup():
+        model = load_compressed(path)
+        # model.scheduler.alphas_cumprod.to("cpu")
+        # model.text_encoder.text_model.embeddings.to("cpu")
+        # model("horse ").images[0].save("/tmp/out.png")
 
 def stats(times: list[int | float]) -> str:
     import statistics
@@ -586,8 +588,9 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
     #     import transformers
     if os.getenv("PROF"):
         if os.getenv("GOOD"):
-            with timer("load_compressed"):
-                with_cleanup(model_path)
+            with cleanup():
+                with timer("load_compressed"):
+                    load_compressed(model_path)
         if os.getenv("TORCH"):
             with timer("torch.load"):
                 # import diffusers
