@@ -13,22 +13,22 @@ var chunkSize = 1024 * 1024 // 1MB
 
 var client = &http.Client{}
 
-var chunkPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, chunkSize)
-	},
-}
-
 type Buffer struct {
-	data  [][]byte
-	mutex sync.RWMutex
-	cond  *sync.Cond
-	done  bool
+	data      [][]byte
+	mutex     sync.RWMutex
+	cond      *sync.Cond
+	done      bool
+	chunkPool sync.Pool
 }
 
 func NewBuffer() *Buffer {
 	b := &Buffer{}
 	b.cond = sync.NewCond(&b.mutex)
+	b.chunkPool = sync.Pool{
+		New: func() interface{} {
+			return make([]byte, chunkSize)
+		},
+	}
 	return b
 }
 
@@ -76,7 +76,7 @@ func downloadToBuffer(url string, buf *Buffer) {
 	defer resp.Body.Close()
 
 	for {
-		chunk := chunkPool.Get().([]byte)
+		chunk := buf.chunkPool.Get().([]byte)
 		n, err := resp.Body.Read(chunk)
 		if n > 0 {
 			buf.Enqueue(chunk[:n]) // Add the data to the buffer
@@ -85,7 +85,7 @@ func downloadToBuffer(url string, buf *Buffer) {
 			buf.MarkDone()
 			elapsed := time.Since(startTime)
 			fmt.Fprintf(os.Stderr, "Downloaded %s in %s\n", url, elapsed)
-			chunkPool.Put(chunk)
+			buf.chunkPool.Put(chunk)
 			return
 		}
 		if err != nil {
@@ -100,7 +100,7 @@ func writeToStdout(url string, buf *Buffer) {
 	start := time.Now()
 	for {
 		chunk := buf.Dequeue()
-		defer chunkPool.Put(chunk)
+		defer buf.chunkPool.Put(chunk)
 		if chunk == nil && buf.IsDone() {
 			elapsed := time.Since(start)
 			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s\n", elapsed)
