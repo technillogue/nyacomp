@@ -53,6 +53,7 @@ int getenv(const char* name, int default_value) {
 const bool DEBUG = getenv("DEBUG", 0);
 const bool SILENT = getenv("SILENT", 0);
 const bool DEBUG_MALLOC = getenv("DEBUG_MALLOC", 0);
+const bool DEBUG_EVENT = getenv("DEBUG_SYNC", 0);
 
 void debug(const std::string& msg) {
   if (DEBUG)
@@ -68,6 +69,13 @@ void debug_malloc(const std::string& msg) {
   if (DEBUG_MALLOC)
     std::cout << msg << std::endl;
 }
+
+void debug_event(const std::string& msg) {
+  if (DEBUG_EVENT)
+    std::cout << msg << std::endl;
+}
+
+
 // size_t round_up_kb(size_t size) { return (size + 1023) & -1024; }
 
 template<typename T>
@@ -657,9 +665,6 @@ std::vector<torch::Tensor> batch_decompress(
   CUDA_CHECK(cudaSetDevice(0));
   debug("cudaSetDevice to initialize primary context took " + pprint(std::chrono::steady_clock::now() - start));}
 
-  // size_t total_file_size = getenv("TOTAL_FILE_SIZE", 0);
-  // assert(total_file_size > 0);
-
   size_t total_buffer_size = num_threads * CHUNK_SIZE * NUM_CIRCLE_BUFFERS;
 
   // this is a significant bottleneck
@@ -674,9 +679,6 @@ std::vector<torch::Tensor> batch_decompress(
 
     futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
       log("started thread " + std::to_string(thread_id));
-
-      // just do big pipe curl subproc and eventually replace it with our own client with asio
-
 
       FILE* curl_file = nullptr;
       DownloadProc downloader;
@@ -736,9 +738,6 @@ std::vector<torch::Tensor> batch_decompress(
           input_buffer_len = files[i].compressed_size;
           file = curl_file;
         } else {
-          // std::ifstream file = std::ifstream(files[i].filename, std::ios::binary | std::ios::ate);
-          // input_buffer_len = static_cast<size_t>(file.tellg());
-          // file.seekg(0, std::ios::beg);
           fd = open(files[i].filename.c_str(), O_RDONLY);
           if (fd == -1)
             throw std::invalid_argument("Could not open file " + files[i].filename);
@@ -781,16 +780,18 @@ std::vector<torch::Tensor> batch_decompress(
           debug_malloc(prefix + "allocating " + pprint(files[i].compressed_size) + " compressed device memory");
           CUDA_CHECK(cudaMallocAsync(&comp_buffer, files[i].compressed_size, stream));
         }
+
         auto copy_done = thread_copy_done[thread_id];
         if (copy_done != nullptr) {
           auto start = std::chrono::steady_clock::now();
+          debug_event(prefix + "synchronizing copy_done event " + pprint(copy_done));
           CUDA_CHECK(cudaEventSynchronize(copy_done)); // wait for previous copy to finish before changing host_compressed_data
           log(prefix + "before using host_compressed_data, waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
         }
         else {
-          debug(prefix + "created event");
           CUDA_CHECK(cudaEventCreateWithFlags(&thread_copy_done[thread_id], cudaEventDisableTiming));
           copy_done = thread_copy_done[thread_id];
+          debug_event(prefix + "created event " + pprint(copy_done));
         }
 
         auto copy_begin = std::chrono::steady_clock::now();
@@ -828,11 +829,12 @@ std::vector<torch::Tensor> batch_decompress(
               posix_fadvise64(fd, already_read, to_read, POSIX_FADV_WILLNEED);
             buffer_id = chunks % num_buffers;
             if (circle_done_events[buffer_id] == nullptr) {
-              debug(prefix + "created event");
               CUDA_CHECK(cudaEventCreateWithFlags(&circle_done_events[buffer_id], cudaEventDisableTiming));
+              debug_event(prefix + "created event " + pprint(circle_done_events[buffer_id]));
             }
             else {
               auto start = maybe_now();
+              debug_event(prefix + "synchronizing circle_done event " + pprint(circle_done_events[buffer_id]));
               CUDA_CHECK(cudaEventSynchronize(circle_done_events[buffer_id])); // wait for previous copy to finish before changing host_compressed_data
               sync_time += std::chrono::duration_cast<std::chrono::microseconds>(maybe_now() - start);
             }
