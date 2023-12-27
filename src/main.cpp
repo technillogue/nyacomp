@@ -219,7 +219,7 @@ public:
       posix_spawn_file_actions_adddup2(&actions, log_fd, STDERR_FILENO);
       posix_spawn_file_actions_addclose(&actions, log_fd);
     } else
-      posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
+      posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
     // spawn curl or custom curl that doesn't network backpressure on full pipe
     int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL);
     if (retcode != 0) {
@@ -825,7 +825,7 @@ std::vector<torch::Tensor> batch_decompress(
             auto fread_result = fread(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read, 1, file);
             thread_read_time += (maybe_now() - start);
             if (fread_result != 1) {
-              perror("freading file");
+              perror(("freading returned " + std::to_string(fread_result) + " instead of 1, error:").c_str());
               throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + "): " + std::to_string(fread_result) + ", eof: " + std::to_string(feof(file)));
             }
             CUDA_CHECK(cudaMemcpyAsync(comp_buffer + already_read, host_buffers[buffer_id], to_read, cudaMemcpyDefault, stream));

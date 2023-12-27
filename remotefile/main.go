@@ -93,7 +93,7 @@ func downloadToBuffer(url string, buf *Buffer) {
 
 }
 
-func writeToStdout(buf *Buffer) {
+func writeToStdout(url string, buf *Buffer) {
 	start := time.Now()
 	for {
 		chunk := buf.Dequeue()
@@ -105,7 +105,7 @@ func writeToStdout(buf *Buffer) {
 		}
 		_, err := os.Stdout.Write(chunk)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing to stdout: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Error writing %s to stdout: %v\n", url, err)
 			return
 		}
 	}
@@ -124,6 +124,6 @@ func main() {
 		buf := NewBuffer()
 
 		go downloadToBuffer(url, buf)
-		writeToStdout(buf)
+		writeToStdout(url, buf)
 	}
 }

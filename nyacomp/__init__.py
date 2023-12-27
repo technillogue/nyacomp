@@ -120,7 +120,7 @@ def tensor_bytes(tensor: "torch.Tensor") -> bytes:
 
 Tensory = Union["torch.Tensor", "torch.nn.Parameter"]
 if os.getenv("DOWNLOAD"):
-    HOST = os.getenv("HOST", "localhost:8000")
+    HOST = os.getenv("HOST", "http://localhost:8080")
 else:
     HOST = ""
 
@@ -320,7 +320,8 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
     orig_tensors: list[torch.Tensor] = []
 
     def persistent_id(obj: Any) -> int | None:
-        if isinstance(obj, torch.Tensor):
+        # don't compress cpu tensors
+        if isinstance(obj, torch.Tensor) and obj.device.type != "cpu":
             i = len(orig_tensors)
             orig_tensors.append(obj.to("cpu"))
             return i
@@ -450,7 +451,7 @@ def load_compressed(path: str | Path = default_path) -> Compressable:
     with timer("boneless torch.load"):
         with annotate("torch.load"):
             print("boneless torch.load")
-            model = torch.load(path, map_location="cuda:0")
+            model = torch.load(path)
 
     with timer("load tensors"):
         tensors = get_tensors(path)
@@ -510,6 +511,9 @@ def load_compressed_pickle(path: str | Path = default_path) -> Compressable:
 def with_cleanup(path: Path) -> None:
     prev_size = torch.cuda.memory.memory_reserved()
     model = load_compressed(path)
+    # model.scheduler.alphas_cumprod.to("cpu")
+    # model.text_encoder.text_model.embeddings.to("cpu")
+    model("horse ").images[0].save("/tmp/out.png")
     del model
     gc.collect()
     used_size = torch.cuda.memory.memory_reserved()
@@ -523,10 +527,10 @@ def with_cleanup(path: Path) -> None:
         "mem after clearing cache",
         natsize(freed_size),
     )
-    if torch.cuda.memory.memory_reserved() > prev_size:
-        import pdb
+    # if torch.cuda.memory.memory_reserved() > prev_size:
+    #     import pdb
 
-        pdb.set_trace()
+    #     pdb.set_trace()
 
 
 def stats(times: list[int | float]) -> str:
@@ -565,6 +569,8 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
                     # safety_checker=None,
                     local_files_only=True,
                 )
+                # unfortunately, this is necessary to learn that the scheduler remains on the cpu
+                model.to("cuda")
             else:
                 import transformers
 
