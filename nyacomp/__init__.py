@@ -132,7 +132,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     # Helper function to save raw data and adjust meta
     def save_raw(p: Path, d: bytes, m: dict) -> tuple[dict, int, int]:
         p.with_suffix(".raw").open("wb").write(d)
-        m |= {"filename": str(HOST / p.with_suffix(".raw")), "compressed_size": size}
+        m |= {"filename": f'{HOST}/{p.with_suffix(".raw")}', "compressed_size": size}
         return m, size, size
 
     if size < (1 << 1):
@@ -147,7 +147,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
         print(f"compressing parameter to {path}")
         new_size = _nyacomp.compress(data, str(path))
     meta = {
-        "filename": str(HOST / path),
+        "filename": f'{HOST}/{p.with_suffix(".raw")}',
         "shape": list(param.shape),
         "dtype": str(param.dtype).removeprefix("torch."),
         "decompressed_size": size,

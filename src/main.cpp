@@ -70,17 +70,25 @@ void debug_malloc(const std::string& msg) {
 }
 // size_t round_up_kb(size_t size) { return (size + 1023) & -1024; }
 
-std::string pprint(cudaStream_t stream) {
+template<typename T>
+std::string generic_pprint_hex(T t) {
   std::stringstream ss;
-  ss << std::hex << stream;
+  ss << std::hex << t;
   return ss.str();
 }
 
-std::string pprint(uint8_t* ptr) {
-  std::stringstream ss;
-  ss << std::hex << ptr;
-  return ss.str();
+std::string pprint(cudaStream_t stream) {
+  return generic_pprint_hex(stream);
 }
+
+std::string pprint(cudaEvent_t event) {
+  return generic_pprint_hex(event);
+}
+
+std::string pprint(uint8_t* ptr) {
+  return generic_pprint_hex(ptr);
+}
+
 
 std::string pprint(std::vector<char*> vec) {
   std::stringstream ss;
@@ -514,13 +522,20 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> parse_csv(
   }
   std::vector<CompressedFile> files;
   while (std::getline(file, line)) {
-    std::stringstream ss(line);
-    std::string filename, tensor_shape_str, dtype, size, compressed_size_str;
-    ss >> filename >> tensor_shape_str >> dtype >> size >> compressed_size_str;
-    std::vector<int64_t> tensor_shape = parse_ints(tensor_shape_str);
-    size_t decompressed_size = std::stoull(size);
-    size_t compressed_size = std::stoull(compressed_size_str);
-    files.emplace_back(filename, tensor_shape, dtype, decompressed_size, compressed_size);
+    try {
+      std::stringstream ss(line);
+      std::string filename, tensor_shape_str, dtype, size, compressed_size_str;
+      ss >> filename >> tensor_shape_str >> dtype >> size >> compressed_size_str;
+      std::vector<int64_t> tensor_shape = parse_ints(tensor_shape_str);
+      size_t decompressed_size = std::stoull(size);
+      size_t compressed_size = std::stoull(compressed_size_str);
+      files.emplace_back(filename, tensor_shape, dtype, decompressed_size, compressed_size);
+      // print line being parsed in case of error
+    } catch (std::exception& e) {
+      std::cout << "Error parsing line: " << line << std::endl;
+      throw e;
+    }
+
   }
   return std::make_pair(thread_to_idx, files);
 }
@@ -755,7 +770,7 @@ std::vector<torch::Tensor> batch_decompress(
             saved_comp_buffer_size = 0;
           }          
           if (saved_comp_buffer == nullptr) {
-            debug_malloc(prefix + "allocating " + pprint(input_buffer_len) + "compressed device memory");
+            debug_malloc(prefix + "allocating " + pprint(input_buffer_len) + " reusable compressed device memory");
             CUDA_CHECK(cudaMallocAsync(&saved_comp_buffer, input_buffer_len, stream));
             if (!saved_comp_buffer)
               throw std::runtime_error("Could not allocate device memory for compressed data");
@@ -763,6 +778,7 @@ std::vector<torch::Tensor> batch_decompress(
           }
           comp_buffer = saved_comp_buffer;
         } else {
+          debug_malloc(prefix + "allocating " + pprint(files[i].compressed_size) + " compressed device memory");
           CUDA_CHECK(cudaMallocAsync(&comp_buffer, files[i].compressed_size, stream));
         }
         auto copy_done = thread_copy_done[thread_id];

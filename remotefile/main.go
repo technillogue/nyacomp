@@ -11,15 +11,17 @@ import (
 
 var chunkSize = 1024 * 1024 // 1MB
 
-// if os.Getenv("CHUNK_SIZE") {
-// 	chunkSize, _ = strconv.Atoi(os.Getenv("CHUNK_SIZE"))
-// }
-
 var client = &http.Client{}
+
+var chunkPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, chunkSize)
+	},
+}
 
 type Buffer struct {
 	data  [][]byte
-	mutex sync.Mutex
+	mutex sync.RWMutex
 	cond  *sync.Cond
 	done  bool
 }
@@ -73,8 +75,8 @@ func downloadToBuffer(url string, buf *Buffer) {
 	}
 	defer resp.Body.Close()
 
-	chunk := make([]byte, chunkSize)
 	for {
+		chunk := chunkPool.Get().([]byte)
 		n, err := resp.Body.Read(chunk)
 		if n > 0 {
 			buf.Enqueue(chunk[:n]) // Add the data to the buffer
@@ -83,6 +85,7 @@ func downloadToBuffer(url string, buf *Buffer) {
 			buf.MarkDone()
 			elapsed := time.Since(startTime)
 			fmt.Fprintf(os.Stderr, "Downloaded %s in %s\n", url, elapsed)
+			chunkPool.Put(chunk)
 			return
 		}
 		if err != nil {
@@ -97,10 +100,10 @@ func writeToStdout(url string, buf *Buffer) {
 	start := time.Now()
 	for {
 		chunk := buf.Dequeue()
+		defer chunkPool.Put(chunk)
 		if chunk == nil && buf.IsDone() {
 			elapsed := time.Since(start)
 			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s\n", elapsed)
-			os.Stdout.Close()
 			return
 		}
 		_, err := os.Stdout.Write(chunk)
@@ -116,13 +119,13 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Usage: downloader <url1> <url2> ...")
 		os.Exit(1)
 	}
-
 	for _, url := range os.Args[1:] {
+		// ignore curl args
 		if url == "-s" || url == "-v" {
 			continue
 		}
 		buf := NewBuffer()
-
+		// download and write to stdout, but buffer download if stdout is full
 		go downloadToBuffer(url, buf)
 		writeToStdout(url, buf)
 	}
