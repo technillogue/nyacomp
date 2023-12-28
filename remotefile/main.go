@@ -6,14 +6,16 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 )
 
 var chunkSize = 1024 * 1024 // 1MB
 
 var client = &http.Client{}
 
-type Buffer struct {
+type DownloadBuffer struct {
 	data      [][]byte
 	mutex     sync.RWMutex
 	cond      *sync.Cond
@@ -21,8 +23,8 @@ type Buffer struct {
 	chunkPool sync.Pool
 }
 
-func NewBuffer() *Buffer {
-	b := &Buffer{}
+func NewBuffer() *DownloadBuffer {
+	b := &DownloadBuffer{}
 	b.cond = sync.NewCond(&b.mutex)
 	b.chunkPool = sync.Pool{
 		New: func() interface{} {
@@ -32,14 +34,14 @@ func NewBuffer() *Buffer {
 	return b
 }
 
-func (b *Buffer) Enqueue(chunk []byte) {
+func (b *DownloadBuffer) Enqueue(chunk []byte) {
 	b.mutex.Lock()
 	b.data = append(b.data, chunk)
 	b.cond.Signal() // Signal to the writer that there's new data
 	b.mutex.Unlock()
 }
 
-func (b *Buffer) Dequeue() []byte {
+func (b *DownloadBuffer) Dequeue() []byte {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	for len(b.data) == 0 {
@@ -53,20 +55,20 @@ func (b *Buffer) Dequeue() []byte {
 	return chunk
 }
 
-func (b *Buffer) MarkDone() {
+func (b *DownloadBuffer) MarkDone() {
 	b.mutex.Lock()
 	b.done = true
 	b.cond.Signal() // Signal that downloading is done
 	b.mutex.Unlock()
 }
 
-func (b *Buffer) IsDone() bool {
+func (b *DownloadBuffer) IsDone() bool {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	return b.done && len(b.data) == 0
 }
 
-func downloadToBuffer(url string, buf *Buffer) {
+func downloadToBuffer(url string, buf *DownloadBuffer) {
 	startTime := time.Now()
 	resp, err := client.Get(url)
 	if err != nil {
@@ -96,7 +98,7 @@ func downloadToBuffer(url string, buf *Buffer) {
 
 }
 
-func writeToStdout(url string, buf *Buffer) {
+func writeToStdout(url string, buf *DownloadBuffer) {
 	start := time.Now()
 	for {
 		chunk := buf.Dequeue()
@@ -106,11 +108,32 @@ func writeToStdout(url string, buf *Buffer) {
 			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s\n", elapsed)
 			return
 		}
-		_, err := os.Stdout.Write(chunk)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error writing %s to stdout: %v\n", url, err)
-			return
+		// use vmsplice to write chunk to stdout
+
+		// ssize_t vmsplice(int fd, const struct iovec *iov, unsigned long nr_segs, unsigned int flags);
+
+		// 	struct iovec {
+		// 		void  *iov_base;        /* Starting address */
+		// 		size_t iov_len;         /* Number of bytes */
+		// 	};
+		if os.Getenv("VMSPLICE") == "1" {
+			_, _, err := syscall.Syscall6(syscall.SYS_VMSPLICE, os.Stdout.Fd(), uintptr(unsafe.Pointer(&syscall.Iovec{
+				Base: &chunk[0],
+				Len:  uint64(len(chunk)),
+			})), 1, 0, 0, 0)
+
+			if err != 0 {
+				fmt.Fprintf(os.Stderr, "Error splicing %s to stdout: %v\n", url, err)
+				return
+			}
+		} else {
+			_, err := os.Stdout.Write(chunk)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error writing %s to stdout: %v\n", url, err)
+				return
+			}
 		}
+
 	}
 }
 
