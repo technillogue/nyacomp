@@ -905,6 +905,7 @@ std::vector<torch::Tensor> batch_decompress(
             auto create_manager_begin = std::chrono::steady_clock::now();
             std::string name = "thread-" + std::to_string(thread_id) + "-stream-" + stream_name;
             decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, nvcompBatchedGdeflateDefaultOpts, stream, name); // 1 << 16 is 64KB, 0 is fast compression
+            // 1 << 16 is 64KB, 0 is fast compression
             managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
             log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + stream_name + " (job " + std::to_string(job_number) + ")");
           }
@@ -968,11 +969,10 @@ std::vector<torch::Tensor> batch_decompress(
           thread_decomp_time += decomp_time; // shrug
         }
 
-        auto file_elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - file_start_time).count();
+        ms_t file_elapsed_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - file_start_time);
 
-        log(prefix + "processed in " + std::to_string(file_elapsed_time) + " ms");
+        log(prefix + "processed file in " + pprint(file_elapsed_time) + " ms (" + pprint_throughput(files[i].decompressed_size, file_elapsed_time) + ")");
         thread_copy_time += copy_time;
-        
       }
       if (REUSE_COMP_BUFFER) {
         cudaStream_t stream = streams[thread_id][0];
