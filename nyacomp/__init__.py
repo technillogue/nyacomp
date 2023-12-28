@@ -4,6 +4,10 @@ import importlib.util
 import os
 import sys
 
+if os.uname().nodename == "decid":
+    # oomkill us before killing chrome tabs 
+    open("/proc/self/oom_score_adj", "w").write("1000")
+
 os.environ["HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
@@ -147,7 +151,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
         print(f"compressing parameter to {path}")
         new_size = _nyacomp.compress(data, str(path))
     meta = {
-        "filename": f'{HOST}/{p.with_suffix(".raw")}',
+        "filename": f'{HOST}/{path}',
         "shape": list(param.shape),
         "dtype": str(param.dtype).removeprefix("torch."),
         "decompressed_size": size,
@@ -304,6 +308,9 @@ def compress(model: Compressable, path: str | Path = default_path) -> float:
     torch.save(model, str(path))
     return total_compressed_size / total_size
 
+def empty_cache() -> None:
+    gc.collect()
+    torch.cuda.empty_cache()
 
 def compress_pickle(model: Compressable, path: str | Path = default_path) -> float:
     global torch
@@ -332,10 +339,14 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
     pickler = pickle.Pickler(buf, protocol=5)
     pickler.persistent_id = persistent_id
     pickler.dump(model)
+    del model
+    empty_cache()
     buf.seek(0)
     # removes unused PUTs
     open(path, "wb").write(pickletools.optimize(buf.read()))
     parameters, info = merge_tensors(orig_tensors)  # hmm
+    del orig_tensors
+    empty_cache()
     open(path.parent / MERGE_INFO_FNAME, "w").write(info)
 
     total_size = 0.0
@@ -348,6 +359,7 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
         meta.append(param_meta)
         total_size += size
         total_compressed_size += new_size
+        del param
 
     # at this point we can concatenate files based on thread assignment for upload
 
@@ -491,8 +503,8 @@ def load_compressed_pickle(path: str | Path = default_path) -> Compressable:
 
     def persistent_load(id: int) -> "torch.Tensor":
         # this could be a device=meta, but we want to set t.data later on
-        lazy_tensors[id] = t = torch.tensor([])
-        return t
+        lazy_tensors[id] = torch.tensor([])
+        return lazy_tensors[id]
 
     unpickler = pickle.Unpickler(open(path, "rb"))
     unpickler.persistent_load = persistent_load
@@ -506,6 +518,7 @@ def load_compressed_pickle(path: str | Path = default_path) -> Compressable:
         for idx, tensor in enumerate(real_tensors):
             lazy_tensors[idx].data = tensor
     return model
+
 
 @contextlib.contextmanager
 def cleanup() -> None:
@@ -530,10 +543,11 @@ def cleanup() -> None:
 
 def with_cleanup(path: Path) -> None:
     with cleanup():
-        model = load_compressed(path)
+        model = load_compressed_pickle(path)
         # model.scheduler.alphas_cumprod.to("cpu")
         # model.text_encoder.text_model.embeddings.to("cpu")
         # model("horse ").images[0].save("/tmp/out.png")
+
 
 def stats(times: list[int | float]) -> str:
     import statistics
@@ -557,22 +571,23 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
     if COMPRESS:
         with timer("from_pretrained"):
             if os.getenv("DIFFUSERS") or os.getenv("ENV") == "PROD":
-                import diffusers
+                model = torch.load("/tmp/sdxl_bundle_raw.pth")
+                # import diffusers
 
                 # thing here about AIT
                 # needs to be compressed for the same diffusers version
                 # (or use state dict...)
-                model = diffusers.DiffusionPipeline.from_pretrained(
-                    # "CompVis/stable-diffusion-v1-4",
-                    "/home/sylv/r8/cog-sdxl/sdxl-cache",
-                    torch_dtype=torch.float16,
-                    variant="fp16",
-                    use_safetensors=True,
-                    # safety_checker=None,
-                    local_files_only=True,
-                )
-                # unfortunately, this is necessary to learn that the scheduler remains on the cpu
-                model.to("cuda")
+                # model = diffusers.DiffusionPipeline.from_pretrained(
+                #     # "CompVis/stable-diffusion-v1-4",
+                #     "/home/sylv/r8/cog-sdxl/sdxl-cache",
+                #     torch_dtype=torch.float16,
+                #     variant="fp16",
+                #     use_safetensors=True,
+                #     # safety_checker=None,
+                #     local_files_only=True,
+                # )
+                # # unfortunately, this is necessary to learn that the scheduler remains on the cpu
+                # model.to("cuda")
             else:
                 import transformers
 
@@ -581,7 +596,7 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
                 )
         torch.save(model, "/tmp/model.pth")
         # model = torch.load("/tmp/clip.pth", map_location="cpu")
-        compress(model, model_path)
+        compress_pickle(model, model_path)
         del model
         torch.cuda.memory.empty_cache()
     # with timer("import transformers"):
@@ -590,12 +605,12 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
         if os.getenv("GOOD"):
             with cleanup():
                 with timer("load_compressed"):
-                    load_compressed(model_path)
+                    load_compressed_pickle(model_path)
         if os.getenv("TORCH"):
             with timer("torch.load"):
                 # import diffusers
                 # model = diffusers.StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4", torch_dtype=torch.float16, revision="fp16", safety_checker=None, local_files_only=True)
-                torch.load("/tmp/model.pth", map_location="cuda:0")
+                torch.load("/tmp/sdxl_bundle_raw.pth", map_location="cuda:0")
         sys.exit(0)
     os.environ["NAME"] = name = "run-" + str(int(time.time()))
     times = [

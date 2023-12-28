@@ -615,20 +615,21 @@ struct FileAndFd {
   size_t size;
 };
 
-MaybeFile open_file(CompressedFile file) {
-  int fd = open(file.c_str(), O_RDONLY);
+FileAndFd open_file(CompressedFile comp_file) {
+  auto filename = comp_file.filename;
+  int fd = open(filename.c_str(), O_RDONLY);
   if (fd == -1)
-    throw std::invalid_argument("Could not open file " + file);
-  file = fdopen(fd, "r");
+    throw std::invalid_argument("Could not open file " + filename);
+  FILE* file = fdopen(fd, "r");
   if (file == nullptr)
-    throw std::invalid_argument("Could not open file " + file);
+    throw std::invalid_argument("Could not open file " + filename);
   size_t size = lseek(fd, 0, SEEK_END);
   if (size == (size_t)-1)
-    throw std::invalid_argument("Could not seek to end of file " + file);
+    throw std::invalid_argument("Could not seek to end of file " + filename);
   if (size == 0)
-    throw std::invalid_argument("File " + file + " is empty");
-  if (size > file.decompressed_size)
-    throw std::invalid_argument("File " + file + " is bigger than decompressed size" + pprint(size) + " vs " + pprint(file.decompressed_size));
+    throw std::invalid_argument("File " + filename + " is empty");
+  if (size > comp_file.decompressed_size)
+    throw std::invalid_argument("File " + filename + " is bigger than decompressed size" + pprint(size) + " vs " + pprint(comp_file.decompressed_size));
   lseek(fd, 0, SEEK_SET);
   return {file, fd, size};
 }
@@ -763,7 +764,7 @@ std::vector<torch::Tensor> batch_decompress(
           file = curl_file;
           input_buffer_len = files[i].compressed_size;
         } else {
-          MaybeFile file_and_fd = open_file(files[i]);
+          FileAndFd file_and_fd = open_file(files[i]);
           file = file_and_fd.file;
           fd = file_and_fd.fd;
           input_buffer_len = file_and_fd.size;
