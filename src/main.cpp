@@ -609,6 +609,30 @@ private:
 
 using ms_t = std::chrono::milliseconds;
 
+struct FileAndFd {
+  FILE* file;
+  int fd;
+  size_t size;
+};
+
+MaybeFile open_file(CompressedFile file) {
+  int fd = open(file.c_str(), O_RDONLY);
+  if (fd == -1)
+    throw std::invalid_argument("Could not open file " + file);
+  file = fdopen(fd, "r");
+  if (file == nullptr)
+    throw std::invalid_argument("Could not open file " + file);
+  size_t size = lseek(fd, 0, SEEK_END);
+  if (size == (size_t)-1)
+    throw std::invalid_argument("Could not seek to end of file " + file);
+  if (size == 0)
+    throw std::invalid_argument("File " + file + " is empty");
+  if (size > file.decompressed_size)
+    throw std::invalid_argument("File " + file + " is bigger than decompressed size" + pprint(size) + " vs " + pprint(file.decompressed_size));
+  lseek(fd, 0, SEEK_SET);
+  return {file, fd, size};
+}
+
 int NUM_THREADS = getenv("NUM_THREADS", std::thread::hardware_concurrency());
 
 size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
@@ -730,29 +754,19 @@ std::vector<torch::Tensor> batch_decompress(
         thread_decompressed_size  += files[i].decompressed_size;
 
         uint8_t* host_compressed_data;
+
         size_t input_buffer_len;
         FILE* file = nullptr;
         int fd = -1;
         // if curl_file is not nullptr, we are using curl to download the file and not locally
         if (curl_file != nullptr) {
-          input_buffer_len = files[i].compressed_size;
           file = curl_file;
+          input_buffer_len = files[i].compressed_size;
         } else {
-          fd = open(files[i].filename.c_str(), O_RDONLY);
-          if (fd == -1)
-            throw std::invalid_argument("Could not open file " + files[i].filename);
-          file = fdopen(fd, "r");
-          if (file == nullptr)
-            throw std::invalid_argument("Could not open file " + files[i].filename);
-
-          input_buffer_len = lseek(fd, 0, SEEK_END);
-          if (input_buffer_len == (size_t)-1)
-            throw std::invalid_argument("Could not seek to end of file " + files[i].filename);
-          if (input_buffer_len == 0)
-            throw std::invalid_argument("File " + files[i].filename + " is empty");
-          if (input_buffer_len > files[i].decompressed_size)
-            throw std::invalid_argument("File " + files[i].filename + " is bigger than decompressed size" + pprint(input_buffer_len) + " vs " + pprint(files[i].decompressed_size));
-          lseek(fd, 0, SEEK_SET);
+          MaybeFile file_and_fd = open_file(files[i]);
+          file = file_and_fd.file;
+          fd = file_and_fd.fd;
+          input_buffer_len = file_and_fd.size;
         }
 
 
@@ -870,6 +884,24 @@ std::vector<torch::Tensor> batch_decompress(
           auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
 
           if (!decomp_nvcomp_manager) {
+            // std::string name = "thread-" + std::to_string(thread_id) + "-stream-" + stream_name;
+            // decomp_nvcomp_manager = create_manager(stream, manager_name, stream_name);
+            // managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
+            
+
+            /*
+            std::shared_ptr <nvcomp::nvcompBatchedGdeflateDecompressor> create_manager(
+              cudaStream_t stream, 
+              std::string manager_name, 
+              std::string stream_name
+            ) {
+              auto create_manager_begin = std::chrono::steady_clock::now();
+              // 1 << 16 is 64KB, 0 is fast compression
+              decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, nvcompBatchedGdeflateDefaultOpts, stream, manager_name);
+              log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + stream_name + " (job " + std::to_string(job_number) + ")");
+              return decomp_nvcomp_manager
+            }
+            */
             auto create_manager_begin = std::chrono::steady_clock::now();
             std::string name = "thread-" + std::to_string(thread_id) + "-stream-" + stream_name;
             decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, nvcompBatchedGdeflateDefaultOpts, stream, name); // 1 << 16 is 64KB, 0 is fast compression
