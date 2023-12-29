@@ -405,7 +405,7 @@ public:
       CUDA_CHECK(cudaMallocHost(&shared_buffer, total_size));
       log("allocated shared " + pprint(total_size) + " in " + pprint(std::chrono::steady_clock::now() - start));
       is_ready.store(true, std::memory_order_release);
-      });
+    });
   }
 
   ~FileLoader() {
@@ -451,27 +451,24 @@ public:
     return shared_buffer + thread_offsets[thread_id];
   }
 
-  // not used
-  std::pair<uint8_t*, size_t> load_file_pinned(const std::string& filename, size_t thread_id) {
-    if (shared_buffer == nullptr)
-      alloc_future.wait();
-    std::ifstream file(filename, std::ios::binary | std::ios::ate);
-    size_t file_size = static_cast<size_t>(file.tellg());
-
-    if (thread_offsets[thread_id] == 0) {
-      size_t offset = global_offset.fetch_add(file_size);
-      if (offset + file_size > total_size)
-        throw std::runtime_error("Shared buffer is not large enough to accommodate the file.");
-      thread_offsets[thread_id] = offset;
-    }
-
-    uint8_t* buffer = shared_buffer + thread_offsets[thread_id];
-
-    file.seekg(0, std::ios::beg);
-    file.read(reinterpret_cast<char*>(buffer), file_size);
-
-    return std::make_pair(buffer, file_size);
-  }
+  // std::pair<uint8_t*, size_t> load_file_pinned(const std::string& filename, size_t thread_id) {
+  //   if (shared_buffer == nullptr)
+  //     alloc_future.wait();
+  //   std::ifstream file(filename, std::ios::binary | std::ios::ate);
+  //   size_t file_size = static_cast<size_t>(file.tellg());
+  //
+  //   if (thread_offsets[thread_id] == 0) {
+  //     size_t offset = global_offset.fetch_add(file_size);
+  //     if (offset + file_size > total_size)
+  //       throw std::runtime_error("Shared buffer is not large enough to accommodate the file.");
+  //     thread_offsets[thread_id] = offset;
+  //   }
+  //
+  //   uint8_t* buffer = shared_buffer + thread_offsets[thread_id];
+  //   file.seekg(0, std::ios::beg);
+  //   file.read(reinterpret_cast<char*>(buffer), file_size);
+  //   return std::make_pair(buffer, file_size);
+  // }
 
 private:
   uint8_t* shared_buffer;
