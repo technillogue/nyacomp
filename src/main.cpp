@@ -214,9 +214,19 @@ int DOWNLOAD_LOG = getenv("DOWNLOAD_LOG", 0);
 
 class DownloadProc {
 public:
-  FILE* download(std::vector<char*> curl_args) {
-    /* runs curl command as a subprocess with a large pipe buffer size, returning the pipe fd */
-    // use posix_spawn to avoid forking
+  /* 
+    download urls in a subprocess, return a file pointer to the pipe
+    posix_spawn is used to avoid forking
+    pipe buffer is widened
+  */
+  FILE* download(std::vector<std::string> urls) {
+    std::vector<char*> curl_args = { (char*) "-s"};
+    if (DEBUG)
+      curl_args.push_back((char*) "-v");
+    for (auto& url : urls)
+      curl_args.push_back(const_cast<char*>(url.c_str()));
+    curl_args.push_back(NULL);  // NULL terminate the arguments list
+
     int pipefd[2];
     if (pipe(pipefd) != 0)
       throw std::runtime_error("Failed to create pipe for curl subprocess.");
@@ -559,7 +569,7 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_remot
   // download file to a buffer and turn it into a stringstream
   auto start = std::chrono::steady_clock::now();
   DownloadProc downloader;
-  FILE* output = downloader.download({ (char*) "-s", (char*) url.c_str() });
+  FILE* output = downloader.download({url});
   debug("launched csv download, proceeding with parsing");
   // create stringstream from fd
   std::stringstream file;
@@ -708,13 +718,10 @@ std::vector<torch::Tensor> batch_decompress(
       FILE* curl_file = nullptr;
       DownloadProc downloader;
       if (DOWNLOAD) {
-        std::vector<char*> curl_args = { (char*) "-s"};
-        if (DEBUG)
-          curl_args.push_back((char*) "-v");
+        std::vector<std::string> urls(files.size());
         for (auto idx : indexes)
-          curl_args.push_back(const_cast<char*>(files[idx].filename.c_str()));
-        curl_args.push_back(NULL);  // NULL terminate the arguments list
-        curl_file = downloader.download(curl_args);
+          urls.push_back(files[idx].filename);
+        curl_file = downloader.download(urls);
       }
 
       auto thread_start = std::chrono::steady_clock::now();
