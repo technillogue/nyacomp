@@ -180,7 +180,6 @@ std::pair<uint8_t*, size_t> load_file_wrapper(const std::string& filename) {
   return std::make_pair(buffer, file_size);
 }
 
-
 size_t get_fsize(std::string filename) {
   struct stat st;
   if (stat(filename.c_str(), &st) != 0)
@@ -195,18 +194,30 @@ size_t get_fsize(int fd) {
   return st.st_size;
 }
 
-
 void widen_pipe(int fd) {
   // check proc/sys/fs/pipe-max-size, if we can't read it default to 1MB
   // cf https://github.com/coreweave/tensorizer/blob/main/tensorizer/_wide_pipes.py#L75
   int max_pipe_size;
   std::ifstream file("/proc/sys/fs/pipe-max-size");
+  std::string is_default = "";
   if (file.is_open())
     file >> max_pipe_size;
-  else
+  else {
     max_pipe_size = 1048576;
-  if (fcntl(fd, F_SETPIPE_SZ, max_pipe_size) == -1)
-    throw std::runtime_error("Failed to set pipe buffer size.");
+    is_default = " (default, couldn't read /proc/sys/fs/pipe-max-size)";
+  }
+  int capacity = fcntl(fd, F_SETPIPE_SZ, max_pipe_size);
+  if (capacity == -1) {
+
+    if (errno == EINVAL)
+      throw std::runtime_error("Failed to set pipe size, invalid argument (are we on linux?).");
+    else if (errno == EPERM)
+      throw std::runtime_error("Permission denied to set pipe size to " + pprint(max_pipe_size) + is_default + ". Is /proc/sys/fs/pipe-max-size set to a larger value? ");
+    else if (errno == EBUSY)
+      throw std::runtime_error("Failed to set pipe size, pipe is busy.");
+    else
+      throw std::runtime_error("Failed to set pipe size, unknown error: " + std::string(strerror(errno)));
+  }
 }
 
 const char* DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
