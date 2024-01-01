@@ -86,7 +86,8 @@ func downloadToBuffer(url string, buf *DownloadBuffer) {
 		if err == io.EOF {
 			buf.MarkDone()
 			elapsed := time.Since(startTime)
-			fmt.Fprintf(os.Stderr, "Downloaded %s in %s\n", url, elapsed)
+			throughput := float64(resp.ContentLength) / elapsed.Seconds() / 1024 / 1024
+			fmt.Fprintf(os.Stderr, "Downloaded %s in %s (%.2f MB/s)\n", url, elapsed, throughput)
 			buf.chunkPool.Put(chunk)
 			return
 		}
@@ -105,7 +106,8 @@ func writeToStdout(url string, buf *DownloadBuffer) {
 		defer buf.chunkPool.Put(chunk)
 		if chunk == nil && buf.IsDone() {
 			elapsed := time.Since(start)
-			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s\n", elapsed)
+			throughput := float64(len(chunk)) / elapsed.Seconds() / 1024 / 1024
+			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s (%.2f MB/s)\n", elapsed, throughput)
 			return
 		}
 		// use vmsplice to write chunk to stdout

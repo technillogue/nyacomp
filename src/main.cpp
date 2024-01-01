@@ -988,7 +988,7 @@ std::vector<torch::Tensor> batch_decompress(
 
         ms_t file_elapsed_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - file_start_time);
 
-        log(prefix + "processed file in " + pprint(file_elapsed_time) + " ms (" + pprint_throughput(files[i].decompressed_size, file_elapsed_time) + ")");
+        log(prefix + "processed file in " + pprint(file_elapsed_time) + " (" + pprint_throughput(files[i].decompressed_size, file_elapsed_time) + ")");
         thread_copy_time += copy_time;
       }
       if (REUSE_COMP_BUFFER) {
