@@ -221,7 +221,8 @@ void widen_pipe(int fd) {
 }
 
 const char* DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
-int DOWNLOAD_LOG = getenv("DOWNLOAD_LOG", 0);
+bool DOWNLOAD_LOG = getenv("DOWNLOAD_LOG", 0);
+bool SKIP_SETPIPE_SZ = getenv("SKIP_SETPIPE_SZ", 0);
 
 class DownloadProc {
 public:
