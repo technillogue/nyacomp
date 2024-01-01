@@ -16,4 +16,5 @@ class AsyncDecompressor:
     def __init__(self, fname: str) -> None:
         ...
 
-    def get(self) -> list["torch.Tensor"]
+    def get(self) -> list["torch.Tensor"]:
+        ...

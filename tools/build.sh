@@ -1,7 +1,7 @@
 set -o xtrace
 set -o pipefail
 set -o errexit
-VERSION="0.0.6.1"
+export VERSION="0.0.6.2"
 # worked with auditwheel for manywheel torch, but not freshly compiled recent-glibc torch
 # nyacomp-$VERSION-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
 WHEEL="nyacomp-$VERSION-cp311-cp311-linux_x86_64.whl"

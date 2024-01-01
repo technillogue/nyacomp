@@ -68,7 +68,6 @@ with timer("stdlib imports"):
     import math
     import pickle
     import pickletools
-    import threading
     import timeit
     from pathlib import Path
     from typing import Any, Iterator, Union, Sequence
