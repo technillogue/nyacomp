@@ -209,13 +209,12 @@ void widen_pipe(int fd) {
   }
   int capacity = fcntl(fd, F_SETPIPE_SZ, max_pipe_size);
   if (capacity == -1) {
-
     if (errno == EINVAL)
-      throw std::runtime_error("Failed to set pipe size, invalid argument (are we on linux?).");
-    else if (errno == EPERM)
-      throw std::runtime_error("Permission denied to set pipe size to " + pprint(max_pipe_size) + is_default + ". Is /proc/sys/fs/pipe-max-size set to a larger value? ");
+      throw std::runtime_error("EINVAL: Failed to set pipe size, invalid argument (are we on linux?).");
+    else if (errno == EPERM) 
+      throw std::runtime_error("EPERM: Permission denied to set pipe size to " + std::to_string(max_pipe_size) + is_default + ". Is /proc/sys/fs/pipe-max-size set to a larger value? ");
     else if (errno == EBUSY)
-      throw std::runtime_error("Failed to set pipe size, pipe is busy.");
+      throw std::runtime_error("EBUSY: Failed to set pipe size, pipe is busy.");
     else
       throw std::runtime_error("Failed to set pipe size, unknown error: " + std::string(strerror(errno)));
   }
