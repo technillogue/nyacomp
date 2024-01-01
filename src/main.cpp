@@ -726,7 +726,7 @@ std::vector<torch::Tensor> batch_decompress(
       FILE* curl_file = nullptr;
       DownloadProc downloader;
       if (DOWNLOAD) {
-        std::vector<std::string> urls(files.size());
+        std::vector<std::string> urls;
         for (auto idx : indexes)
           urls.push_back(files[idx].filename);
         curl_file = downloader.download(urls);
