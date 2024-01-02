@@ -533,7 +533,7 @@ std::vector<int64_t> parse_ints(const std::string& str) {
 // nya/thread_to_idx/8.csv, nya/thread_to_idx/32.csv
 // just one line forthread indexes separated by spaces
 
-std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> parse_csv(std::istream& file) {
+std::pair<std::vector<CompressedFile>, std::vector<std::vector<int>>> parse_csv(std::istream& file) {
   // filename,tensor_shape,dtype,decompressed_size; for example,
   // 1.gz,224;224,float32,50176
   std::string line;
@@ -565,17 +565,16 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> parse_csv(
     }
 
   }
-  return std::make_pair(thread_to_idx, files);
+  return std::make_pair(files, thread_to_idx);
 }
 
 
-std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_csv(std::string fname) {
+std::pair<std::vector<CompressedFile>, std::vector<std::vector<int>>> load_csv(std::string fname) {
     auto file = std::ifstream(fname);
     return parse_csv(file);
 }
 
-
-std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_remote_csv(std::string url) {
+std::pair<std::vector<CompressedFile>, std::vector<std::vector<int>>> load_remote_csv(std::string url) {
   // download file to a buffer and turn it into a stringstream
   auto start = std::chrono::steady_clock::now();
   DownloadProc downloader;
@@ -607,6 +606,27 @@ std::pair<std::vector<std::vector<int>>, std::vector<CompressedFile>> load_remot
   return parse_csv(file); 
 }
 
+int NUM_THREADS = getenv("NUM_THREADS", std::thread::hardware_concurrency());
+int DOWNLOAD = getenv("DOWNLOAD", 0);
+int REMOTE_CSV = getenv("REMOTE_CSV", DOWNLOAD);
+
+
+std::pair<std::vector<CompressedFile>, std::vector<std::vector<int>>> load_any_csv(std::string fname) {
+    std::vector<CompressedFile> files;
+    std::vector<std::vector<int>> thread_to_idx;
+    if (DOWNLOAD && REMOTE_CSV)
+        std::tie(files, thread_to_idx) = load_remote_csv(fname);
+    else
+        std::tie(files, thread_to_idx) = load_csv(fname);
+    // ideally do some more validation
+    size_t num_threads = std::min(static_cast<int>(files.size()), NUM_THREADS);
+    if (thread_to_idx.size() != num_threads) {
+      auto error = "thread_to_idx.size() must be equal to NUM_THREADS, got " + std::to_string(thread_to_idx.size()) + " and " + std::to_string(num_threads);
+      std::cerr << error << std::endl;
+      throw std::invalid_argument(error);
+    }
+    return std::make_pair(files, thread_to_idx);
+}
 
 class SyncedGdeflateManager: public GdeflateManager {
 public:
@@ -654,7 +674,7 @@ FileAndFd open_file(CompressedFile comp_file) {
   return {file, fd, size};
 }
 
-int NUM_THREADS = getenv("NUM_THREADS", std::thread::hardware_concurrency());
+
 
 size_t CHUNK_SIZE = 1 << getenv("CHUNK_SIZE", 20);
 int TENSOR_EARLY = getenv("TENSOR_EARLY", 0);
@@ -668,8 +688,6 @@ int SEQUENTIAL = getenv("SEQUENTIAL", 0);
 
 size_t UNPINNED_JOBS = getenv("UNPINNED_JOBS", 2);
 int UNPINNED_THREADS = getenv("UNPINNED_THREADS", 8);
-int DOWNLOAD = getenv("DOWNLOAD", 0);
-int REMOTE_CSV = getenv("REMOTE_CSV", DOWNLOAD);
 
 std::vector<torch::Tensor> batch_decompress(
   const std::vector<CompressedFile>& files,
@@ -1079,6 +1097,11 @@ std::vector<torch::Tensor> batch_decompress(
   return tensors;
 }
 
+
+std::vector<torch::Tensor> decompress_from_meta(std::string& fname) {
+  return std::apply(batch_decompress, load_any_csv(fname));
+}
+
 class AsyncDecompressor {
 private:
   std::future<std::vector<torch::Tensor>> future;
@@ -1091,22 +1114,16 @@ public:
   AsyncDecompressor(std::string fname) {
     std::vector<CompressedFile> files;
     std::vector<std::vector<int>> thread_to_idx;
-    if (DOWNLOAD && REMOTE_CSV)
-        std::tie(thread_to_idx, files) = load_remote_csv(fname);
-    else
-        std::tie(thread_to_idx, files) = load_csv(fname);
-    // ideally do some more validation
-
-    size_t num_threads = std::min(static_cast<int>(files.size()), NUM_THREADS);
-    if (thread_to_idx.size() != num_threads) {
-      error = "thread_to_idx.size() must be equal to NUM_THREADS, got " + std::to_string(thread_to_idx.size()) + " and " + std::to_string(num_threads);
-      std::cerr << error << std::endl;
+    try {
+      std::tie(files, thread_to_idx) = load_any_csv(fname);
+    }
+    catch(const std::exception& e) {
+      std::cerr << e.what() << '\n';
       failed = true;
     }
-    else {
-      log("starting batch_decompress future");
-      future = std::async(std::launch::async, batch_decompress, files, thread_to_idx);
-    }
+    if (failed) return;
+    log("starting batch_decompress future");
+    future = std::async(std::launch::async, batch_decompress, files, thread_to_idx);
   }
 
   std::vector<torch::Tensor> get() {
@@ -1140,6 +1157,8 @@ PYBIND11_MODULE(_nyacomp, m) {
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
   m.def("batch_decompress", &batch_decompress, "decompress tensors with a threadpool", py::arg("files"), py::arg("assignments"), py::call_guard<py::gil_scoped_release>());
+
+  m.def("decompress_from_meta", &decompress_from_meta, "decompress tensors from meta.csv", py::arg("filename"), py::call_guard<py::gil_scoped_release>());
 
   py::class_<CompressedFile>(m, "CompressedFile")
     // filename, shape, dtype, buffer_size, compressed_size

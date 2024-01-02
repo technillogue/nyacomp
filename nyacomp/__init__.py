@@ -441,8 +441,8 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
             sys.exit(1)
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
-            files, assignments = get_args(path)
-            tensors = _nyacomp.batch_decompress(files, assignments)
+            meta = os.getenv("PRELOAD_PATH", "data/nya/meta.csv")
+            tensors = _nyacomp.decompress_from_meta(meta)
     return tensors
 
 
