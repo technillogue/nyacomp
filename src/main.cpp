@@ -242,7 +242,8 @@ public:
     int pipefd[2];
     if (pipe(pipefd) != 0)
       throw std::runtime_error("Failed to create pipe for curl subprocess.");
-    widen_pipe(pipefd[0]);
+    if (!SKIP_SETPIPE_SZ)
+      widen_pipe(pipefd[0]);
     debug("using downloader path: " + std::string(DOWNLOADER_PATH));
     // set up posix_spawn
     posix_spawn_file_actions_t actions;

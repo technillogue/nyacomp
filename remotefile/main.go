@@ -96,24 +96,23 @@ func downloadToBuffer(url string, buf *DownloadBuffer) {
 			return
 		}
 	}
-
 }
 
 func writeToStdout(url string, buf *DownloadBuffer) {
 	start := time.Now()
+	size := 0
 	for {
 		chunk := buf.Dequeue()
 		defer buf.chunkPool.Put(chunk)
 		if chunk == nil && buf.IsDone() {
 			elapsed := time.Since(start)
-			throughput := float64(len(chunk)) / elapsed.Seconds() / 1024 / 1024
+			throughput := float64(size) / elapsed.Seconds() / 1024 / 1024
 			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s (%.2f MB/s)\n", elapsed, throughput)
 			return
 		}
 		// use vmsplice to write chunk to stdout
 
 		// ssize_t vmsplice(int fd, const struct iovec *iov, unsigned long nr_segs, unsigned int flags);
-
 		// 	struct iovec {
 		// 		void  *iov_base;        /* Starting address */
 		// 		size_t iov_len;         /* Number of bytes */
@@ -135,7 +134,7 @@ func writeToStdout(url string, buf *DownloadBuffer) {
 				return
 			}
 		}
-
+		size += len(chunk)
 	}
 }
 
