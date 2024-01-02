@@ -1,4 +1,3 @@
-// 
 #include <assert.h>
 #include <chrono>
 #include <fcntl.h>
@@ -114,7 +113,6 @@ std::string pprint(std::chrono::duration<int64_t, std::nano> duration) {
   if (duration < std::chrono::milliseconds(2000)) // at least 2ms feels like better precision
     return std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(duration).count() / 1000.0) + "ms";
   return std::to_string(std::chrono::duration_cast<std::chrono::seconds>(duration).count()) + "s";
-
 }
 
 std::string pprint(size_t bytes, int precision = 2) {
@@ -181,19 +179,6 @@ std::pair<uint8_t*, size_t> load_file_wrapper(const std::string& filename) {
   return std::make_pair(buffer, file_size);
 }
 
-size_t get_fsize(std::string filename) {
-  struct stat st;
-  if (stat(filename.c_str(), &st) != 0)
-    return (long)0;
-  return st.st_size;
-}
-
-size_t get_fsize(int fd) {
-  struct stat st;
-  if (fstat(fd, &st) != 0)
-    return (long)0;
-  return st.st_size;
-}
 
 void widen_pipe(int fd) {
   // check proc/sys/fs/pipe-max-size, if we can't read it default to 1MB
@@ -201,9 +186,9 @@ void widen_pipe(int fd) {
   int max_pipe_size;
   std::ifstream file("/proc/sys/fs/pipe-max-size");
   std::string is_default = "";
-  if (file.is_open())
+  if (file.is_open()) {
     file >> max_pipe_size;
-  else {
+  } else {
     max_pipe_size = 1048576;
     is_default = " (default, couldn't read /proc/sys/fs/pipe-max-size)";
   }
@@ -225,7 +210,7 @@ bool DOWNLOAD_LOG = getenv("DOWNLOAD_LOG", 0);
 bool SKIP_SETPIPE_SZ = getenv("SKIP_SETPIPE_SZ", 0);
 
 class DownloadProc {
-public:
+ public:
   /* 
     download urls in a subprocess, return a file pointer to the pipe
     posix_spawn is used to avoid forking
@@ -279,7 +264,7 @@ public:
     waitpid(pid, NULL, 0);
   }
 
-private:
+ private:
   pid_t pid = -1;
 };
 
@@ -407,7 +392,7 @@ torch::Tensor decompress(const std::string filename, std::vector<int64_t> shape,
 
 
 class FileLoader {
-public:
+ public:
   FileLoader(size_t total_size, size_t num_threads)
     : shared_buffer(nullptr), thread_offsets(num_threads, 0), thread_sizes(num_threads, 0), global_offset(0),
     total_size(total_size), is_ready(false) /*, remaining_releases(num_threads) */ {
@@ -483,7 +468,7 @@ public:
   //   return std::make_pair(buffer, file_size);
   // }
 
-private:
+ private:
   uint8_t* shared_buffer;
   std::vector<size_t> thread_offsets;
   std::vector<size_t> thread_sizes;
@@ -505,12 +490,12 @@ struct CompressedFile {
 
   // if filename ends with raw, set not compressed otherwise true
   CompressedFile(
-      const std::string& filename, 
-      const std::vector<int64_t>& tensor_shape, 
-      const std::string& dtype, 
-      const size_t decompressed_size, 
+      const std::string& filename,
+      const std::vector<int64_t>& tensor_shape,
+      const std::string& dtype,
+      const size_t decompressed_size,
       const size_t compressed_size
-    ): filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size), compressed_size(compressed_size){
+    ): filename(filename), tensor_shape(tensor_shape), dtype(dtype), decompressed_size(decompressed_size), compressed_size(compressed_size) {
     // compare returns 0 or the difference between the first non-matching characters
     if (filename.compare(filename.size() - 3, 3, "raw") == 0)
       is_compressed = false;
@@ -595,7 +580,7 @@ std::pair<std::vector<CompressedFile>, std::vector<std::vector<int>>> load_remot
   auto size = file.tellg();
   log("read " + pprint(size) + " bytes from remote csv " + url + " in " + pprint(std::chrono::steady_clock::now() - start));
   file.seekg(0, std::ios::beg);
-  
+
 
   if (DEBUG) {
     std::cout << file.str(); 
@@ -879,7 +864,7 @@ std::vector<torch::Tensor> batch_decompress(
           int buffer_id = 0;
           while (already_read < input_buffer_len) {
             size_t to_read = std::min(CHUNK_SIZE, input_buffer_len - already_read);
-            if (WILLNEED && !DOWNLOAD) 
+            if (WILLNEED && !DOWNLOAD)
               posix_fadvise64(fd, already_read, to_read, POSIX_FADV_WILLNEED);
             buffer_id = chunks % num_buffers;
             if (circle_done_events[buffer_id] == nullptr) {
@@ -918,7 +903,7 @@ std::vector<torch::Tensor> batch_decompress(
         //   log(prefix + "scheduling release of file_loader on stream " + std::to_string(stream_int) + " (job " + std::to_string(job_number) + ")");
         //   CUDA_CHECK(cudaLaunchHostFunc(stream, FileLoader::release, file_loader));
         // }
-        if (files[i].is_compressed){
+        if (files[i].is_compressed) {
           if (TENSOR_EARLY)
             tensors[i] = make_tensor(files[i].tensor_shape, files[i].dtype);
           auto decomp_nvcomp_manager = managers[job_number % streams_per_thread];
@@ -1029,14 +1014,13 @@ std::vector<torch::Tensor> batch_decompress(
       log("thread " + std::to_string(thread_id) + " processed " + std::to_string(thread_decompressed_size  / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
       // std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)*1000));
 
-      
       // find the file that's all the small tensors, decompress, then create tensors from that with from_blob
       // read the offsets from a file
 
       // thread_managers[thread_id] = managers;
       return std::make_tuple(std::chrono::duration_cast<ms_t>(thread_copy_time), std::chrono::duration_cast<ms_t>(thread_decomp_time), std::chrono::duration_cast<ms_t>(thread_read_time));
       }));
-    // sleep to give the first threads thread a chance to start 
+    // sleep to give the first threads thread a chance to start
     std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)));
   }
 
@@ -1059,10 +1043,9 @@ std::vector<torch::Tensor> batch_decompress(
     if (event != nullptr) {
       CUDA_CHECK(cudaEventSynchronize(event));
       CUDA_CHECK(cudaEventDestroy(event));
-    }
-    else
+    } else {
       std::cerr << "a copy_done event is null, a thread must have failed to start or not done any work" << std::endl;
-
+    }
   delete file_loader;
 
   auto sync_start = std::chrono::steady_clock::now();
@@ -1102,20 +1085,20 @@ std::vector<torch::Tensor> batch_decompress(
 }
 
 
-std::vector<torch::Tensor> decompress_from_meta(std::string& fname) {
+std::vector<torch::Tensor> decompress_from_meta(const std::string& fname) {
   return std::apply(batch_decompress, load_any_csv(fname));
 }
 
 class AsyncDecompressor {
-private:
+ private:
   std::future<std::vector<torch::Tensor>> future;
 
-public:
+ public:
   bool done = false;
   bool failed = false;
   std::string error;
 
-  AsyncDecompressor(std::string fname) {
+  explicit AsyncDecompressor(std::string fname) {
     std::vector<CompressedFile> files;
     std::vector<std::vector<int>> thread_to_idx;
     try {
