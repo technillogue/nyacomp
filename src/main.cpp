@@ -722,6 +722,18 @@ std::vector<torch::Tensor> batch_decompress(
 
   log("using " + std::to_string(num_threads) + " threads and " + std::to_string(streams_per_thread) + " streams per thread for " + std::to_string(num_files) + " files");
 
+
+  std::vector<FILE*> curl_files_for_threads(num_threads, nullptr);
+  std::vector<DownloadProc> downloaders(num_threads);
+  if (DOWNLOAD) {
+    for (size_t thread_id = 0; thread_id < (size_t)num_threads; thread_id++) {
+      std::vector<std::string> urls;
+      for (auto idx : thread_to_idx[thread_id])
+        urls.push_back(files[idx].filename);
+      curl_files_for_threads[thread_id] = downloaders[thread_id].download(urls);
+    }
+  }
+
   // initialize the primary context 
   // see https://forums.developer.nvidia.com/t/cuda-context-and-threading/26625/6 for horrors untold
   {auto start = std::chrono::steady_clock::now(); 
@@ -739,18 +751,10 @@ std::vector<torch::Tensor> batch_decompress(
 
   for (int thread_id = 0; thread_id < num_threads; thread_id++) {
     auto indexes = thread_to_idx[thread_id];
+    FILE* curl_file = curl_files_for_threads[thread_id];
 
-    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &curl_file, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
       log("started thread " + std::to_string(thread_id));
-
-      FILE* curl_file = nullptr;
-      DownloadProc downloader;
-      if (DOWNLOAD) {
-        std::vector<std::string> urls;
-        for (auto idx : indexes)
-          urls.push_back(files[idx].filename);
-        curl_file = downloader.download(urls);
-      }
 
       auto thread_start = std::chrono::steady_clock::now();
       CUDA_CHECK(cudaSetDevice(0)); // this sets the cuda context

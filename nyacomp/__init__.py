@@ -5,7 +5,7 @@ import os
 import sys
 
 if os.uname().nodename == "decid":
-    # oomkill us before killing chrome tabs 
+    # oomkill us before killing chrome tabs
     open("/proc/self/oom_score_adj", "w").write("1000")
 
 os.environ["HUB_OFFLINE"] = "1"
@@ -150,7 +150,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
         print(f"compressing parameter to {path}")
         new_size = _nyacomp.compress(data, str(path))
     meta = {
-        "filename": f'{HOST}/{path}',
+        "filename": f"{HOST}/{path}",
         "shape": list(param.shape),
         "dtype": str(param.dtype).removeprefix("torch."),
         "decompressed_size": size,
@@ -304,12 +304,14 @@ def compress(model: Compressable, path: str | Path = default_path) -> float:
     print("overall compression ratio:", total_compressed_size / total_size)
     print("saving boneless model to ", path)
 
-    torch.save(model, str(path))
+    torch.save(model, str(path), _use_new_zipfile_serialization=True, pickle_protocol=5)
     return total_compressed_size / total_size
+
 
 def empty_cache() -> None:
     gc.collect()
     torch.cuda.empty_cache()
+
 
 def compress_pickle(model: Compressable, path: str | Path = default_path) -> float:
     global torch
@@ -442,6 +444,7 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
             meta = os.getenv("PRELOAD_PATH", "data/nya/meta.csv")
+            print("decompress_from_meta")
             tensors = _nyacomp.decompress_from_meta(meta)
     return tensors
 
