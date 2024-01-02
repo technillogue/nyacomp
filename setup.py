@@ -4,7 +4,7 @@ from pybind11.setup_helpers import Pybind11Extension, build_ext
 from torch.utils.cpp_extension import BuildExtension, CppExtension
 from setuptools import setup
 
-__version__ = os.getenv("VERSION", "0.0.6.2")
+__version__ = os.getenv("VERSION", "dev")
 
 # The main interface is through Pybind11Extension.
 # * You can add cxx_std=11/14/17, and then build_ext can be removed.
