@@ -443,10 +443,11 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
             sys.exit(1)
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
+            if os.getenv("PYTHON_ARGS"):
+                return _nyacomp.batch_decompress(*get_args(path))
             meta = os.getenv("PRELOAD_PATH", "data/nya/meta.csv")
             print("decompress_from_meta")
-            tensors = _nyacomp.decompress_from_meta(meta)
-    return tensors
+            return _nyacomp.decompress_from_meta(meta)
 
 
 @annotate("load_compressed")
@@ -546,9 +547,6 @@ def cleanup() -> None:
 def with_cleanup(path: Path) -> None:
     with cleanup():
         model = load_compressed_pickle(path)
-        # model.scheduler.alphas_cumprod.to("cpu")
-        # model.text_encoder.text_model.embeddings.to("cpu")
-        # model("horse ").images[0].save("/tmp/out.png")
 
 
 def stats(times: list[int | float]) -> str:
@@ -588,7 +586,6 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
                 #     # safety_checker=None,
                 #     local_files_only=True,
                 # )
-                # # unfortunately, this is necessary to learn that the scheduler remains on the cpu
                 # model.to("cuda")
             else:
                 import transformers
@@ -601,8 +598,6 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
         compress_pickle(model, model_path)
         del model
         torch.cuda.memory.empty_cache()
-    # with timer("import transformers"):
-    #     import transformers
     if os.getenv("PROF"):
         if os.getenv("GOOD"):
             with cleanup():
@@ -637,16 +632,10 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
 
 # memory use:
 # O(1) pinned host memory and reads
-# ~O(n) compressed size (max is memory ready or used by simultanious decompressions at a given point in time)
+# ~O(n) compressed size (max is memory ready or used by simultaneous decompressions at a given point in time)
 # O(n) decompressed tensors
 #
 # we can try to solve for low max bandwidth by packing items more closely in time, less bandwidth with higher utilisation
 # have every thread finish at the same time even if it means more memory used as long as its under the memory makespan
-#
-
 
 # we could try using torch's memory allocator
-#
-#
-# it would be really nice to hook into persistent_load, replacing the unpickler in torch.load
-# unless smth diff with aitemplate

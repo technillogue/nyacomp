@@ -218,6 +218,7 @@ class DownloadProc {
   */
   FILE* download(std::vector<std::string> urls) {
     std::vector<char*> curl_args = { (char*) "-s"};
+    curl_args.reserve(urls.size() + 2);
     if (DEBUG)
       curl_args.push_back((char*) "-v");
     for (auto& url : urls)
@@ -713,6 +714,7 @@ std::vector<torch::Tensor> batch_decompress(
   if (DOWNLOAD) {
     for (size_t thread_id = 0; thread_id < (size_t)num_threads; thread_id++) {
       std::vector<std::string> urls;
+      urls.reserve(thread_to_idx[thread_id].size());
       for (auto idx : thread_to_idx[thread_id])
         urls.push_back(files[idx].filename);
       curl_files_for_threads[thread_id] = downloaders[thread_id].download(urls);
@@ -738,7 +740,7 @@ std::vector<torch::Tensor> batch_decompress(
     auto indexes = thread_to_idx[thread_id];
     FILE* curl_file = curl_files_for_threads[thread_id];
 
-    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, &curl_file, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
+    futures.emplace_back(std::async(std::launch::async, [indexes, thread_id, curl_file, &streams, &tensors, &files, &streams_per_thread, &thread_copy_done, &thread_managers, file_loader]() {
       log("started thread " + std::to_string(thread_id));
 
       auto thread_start = std::chrono::steady_clock::now();
