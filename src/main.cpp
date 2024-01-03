@@ -285,13 +285,15 @@ int compress(py::bytes pybytes, const std::string filename) {
 
 
   const int chunk_size = 1 << 16;
-  // nvcompType_t data_type = NVCOMP_TYPE_CHAR;
-  // LZ4Manager nvcomp_manager{chunk_size, data_type, stream};
+  // DEFLATE is LZ77 dictionary + Huffman entropy coding
 
   // 0 : high-throughput, low compression ratio (default) // only supported, lolsob
   // 1 : low-throughput, high compression ratio
-  // 2 : highest-throughput, entropy-only compression (use for symmetric compression/decompression performance
+  // 2 : highest-throughput, entropy-only compression (use for symmetric compression/decompression performance)
 
+  // maybe it's time to rethink this? old testing suggested skipping dictionary could actually give better throughput
+  // but 1 also changes some huffman settings that would have been good
+  // just turning up the chunk size to help the entropy coder might be better
   GdeflateManager nvcomp_manager{ chunk_size, nvcompBatchedGdeflateDefaultOpts, stream, NoComputeNoVerify };
 
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);

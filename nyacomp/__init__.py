@@ -198,25 +198,45 @@ MERGE_INFO_FNAME = "merged_tensors.csv"
 # f"{group[0][1].shape}:" +
 
 
-def get_bins(group: list[IdxTensor], n_splits: int) -> list[list[IdxTensor]]:
+def split_into_bins(group: list[IdxTensor], n_splits: int) -> list[list[IdxTensor]]:
     bin_sizes = [0 for _ in range(n_splits)]
-    # preserve the order of bins, but make sure we would get [3, 2, 2] instead of [3, 3, 1]
+    # e.g. len(group)=7, n_splits=3
+    # preserve the order of bins, but make sure we get
+    # -> [3, 2, 2], not -> [3, 3, 1]
     for i in range(len(group)):
         bin_sizes[i % n_splits] += 1
-    # [2, 3, 3] -> [2, 5, 8]
+    # [3, 2, 2] -> [3, 5, 7]
     bin_offsets = list(it.accumulate(bin_sizes))
     bins = [
+        # -> [[#1, #2, #3], [#4, #5], [#6, #7]]
         sorted(group[start:end])
-        # -> [(0, 2), (2, 5), (5, 8)]
+        # -> [(0, 3), (3, 5), (5, 7)]
         for start, end in zip([0] + bin_offsets, bin_offsets)
     ]
     return bins
 
 
-def merge_tensors(tensors: Sequence[Tensory]) -> tuple[list["torch.Tensor"], str]:
+# def iterative_merge_tensors(
+#     tensors: Sequence[Tensory],
+# ) -> tuple[list["torch.Tensor"], str]:
+#     original_sizes = [tensor_size(t) for t in tensors]
+#     # possible_merge = merge_tensors(tensors, maxsize=m)
+#     # tentative_sizes = sorted([tensor_size(t) for t in possible_merge], reverse=True)
+#     # part = partition.multifit_partition(tentative_sizes, NUM_THREADS)
+#     # makespan = max(map(sum, part))
+#     lower_bound = max(original_sizes)
+#     upper_bound = 2 * sum(original_sizes) / NUM_THREADS
+
+
+def merge_tensors(
+    tensors: Sequence[Tensory], maxsize: int = 0
+) -> tuple[list["torch.Tensor"], str]:
     real_parameter_idx = enumerate(tensors)  # [(idx, tensor), ...]
     grouper = lambda x: x[1].shape
-    maxsize = max(map(tensor_size, tensors))
+    # prev: maxsize = max(map(tensor_size, tensors))
+    # new:
+    if not maxsize:
+        maxsize = sum(map(tensor_size, tensors)) / NUM_THREADS
     subgroups = []
 
     for shape, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):
@@ -226,12 +246,12 @@ def merge_tensors(tensors: Sequence[Tensory]) -> tuple[list["torch.Tensor"], str
             # split the group into n groups such that the splits are close to equal size
             # and each split is less than maxsize
             n_splits = math.ceil(groupsize / maxsize)
-            bins = get_bins(group, n_splits)
+            bins = split_into_bins(group, n_splits)
             subgroups.extend(sorted(bins))
         else:
             subgroups.append(sorted(group))
     # in case of 0-dim tensors (scalars), we add a dimension before concatenating
-    # then remove it after splitting
+    # (then remove it after splitting)
     merged_tensors = [
         torch.cat([torch.unsqueeze(param[1], 0) for param in group], 0)
         for group in subgroups
@@ -243,9 +263,9 @@ def merge_tensors(tensors: Sequence[Tensory]) -> tuple[list["torch.Tensor"], str
 def split_tensors(tensors: list["torch.Tensor"], info: str) -> list["torch.Tensor"]:
     merges = [list(map(int, line.split(","))) for line in info.split("\n")]
     unmerged = [
-        pair
+        (idx, orig_tensor)
         for tensor, idxs in zip(tensors, merges)
-        for pair in zip(idxs, torch.tensor_split(tensor, len(idxs), dim=0))
+        for idx, orig_tensor in zip(idxs, torch.tensor_split(tensor, len(idxs), dim=0))
     ]
     # sort by index to recover the original order
     return [

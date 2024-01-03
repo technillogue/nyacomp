@@ -72,6 +72,7 @@ def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
         biggest_file = max(bin)
         bin.remove(biggest_file)
         bin.insert(0, biggest_file)
+        # might be not unreasonable to shuffle the other items to reduce correlation in time
 
     result = [[indx[size].pop(0) for size in bin] for bin in bins]
     for bin in indx.values():

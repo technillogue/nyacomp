@@ -81,13 +81,14 @@ func downloadToBuffer(url string, buf *DownloadBuffer) {
 		chunk := buf.chunkPool.Get().([]byte)
 		n, err := resp.Body.Read(chunk)
 		if n > 0 {
+			// maybe this should be in a goroutine?
 			buf.Enqueue(chunk[:n]) // Add the data to the buffer
 		}
 		if err == io.EOF {
 			buf.MarkDone()
 			elapsed := time.Since(startTime)
 			throughput := float64(resp.ContentLength) / elapsed.Seconds() / 1024 / 1024
-			fmt.Fprintf(os.Stderr, "Downloaded %s in %s (%.2f MB/s)\n", url, elapsed, throughput)
+			fmt.Fprintf(os.Stderr, "Downloaded %s in %s (%.2f MB/s)\n", resp.Request.URL, elapsed, throughput)
 			buf.chunkPool.Put(chunk)
 			return
 		}
@@ -107,6 +108,7 @@ func writeToStdout(url string, buf *DownloadBuffer) {
 		if chunk == nil && buf.IsDone() {
 			elapsed := time.Since(start)
 			throughput := float64(size) / elapsed.Seconds() / 1024 / 1024
+			// this is the total time which is a little unhelpful
 			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s (%.2f MB/s)\n", elapsed, throughput)
 			return
 		}
