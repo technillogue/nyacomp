@@ -216,17 +216,29 @@ def split_into_bins(group: list[IdxTensor], n_splits: int) -> list[list[IdxTenso
     return bins
 
 
+def calculate_makespan(tensors: Sequence[Tensory]) -> int:
+    tentative_sizes = sorted([tensor_size(t) for t in possible_merge], reverse=True)
+    part = partition.multifit_partition(tentative_sizes, NUM_THREADS)
+    return max(map(sum, part))
+
+
 # def iterative_merge_tensors(
 #     tensors: Sequence[Tensory],
 # ) -> tuple[list["torch.Tensor"], str]:
 #     original_sizes = [tensor_size(t) for t in tensors]
-#     # possible_merge = merge_tensors(tensors, maxsize=m)
-#     # tentative_sizes = sorted([tensor_size(t) for t in possible_merge], reverse=True)
-#     # part = partition.multifit_partition(tentative_sizes, NUM_THREADS)
-#     # makespan = max(map(sum, part))
 #     lower_bound = max(original_sizes)
-#     upper_bound = 2 * sum(original_sizes) / NUM_THREADS
-
+#     best_maxsize = upper_bound = 2 * sum(original_sizes) / NUM_THREADS
+#     best_makespan = calculate_makespan(merge_tensors(tensors, upper_bound))
+#     while lower_bound <= upper_bound:
+#         mid = (lower_bound + upper_bound) // 2
+#         makespan = calculate_makespan(merge_tensors(tensors, mid))
+#         if makespan < best_makespan:
+#             best_makespan = makespan
+#             best_maxsize = mid
+#             lower_bound = mid + 1
+#         else:
+#             upper_bound = mid - 1
+#     return merge_tensors(tensors, best_maxsize)
 
 def merge_tensors(
     tensors: Sequence[Tensory], maxsize: int = 0

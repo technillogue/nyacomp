@@ -312,7 +312,6 @@ int compress(py::bytes pybytes, const std::string filename) {
   float comp_ratio = (float)comp_size / (float)input_buffer_len;
 
   // copy compressed buffer to host memory and then write it to a file
-
   std::ofstream comp_file(filename, std::ios::binary);
   if (!comp_file.is_open())
     throw std::runtime_error("Failed to open file: " + filename);
