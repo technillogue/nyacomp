@@ -128,7 +128,7 @@ else:
     HOST = ""
 
 
-def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
+def compress_parameter(param: Tensory, path: Path, chunk_size: int = 16) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
     size = len(data)
 
@@ -148,7 +148,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
         new_size = path.stat().st_size
     else:
         print(f"compressing parameter to {path}")
-        new_size = _nyacomp.compress(data, str(path))
+        new_size = _nyacomp.compress(data, str(path), chunk_size)
     meta = {
         "filename": f"{HOST}/{path}",
         "shape": list(param.shape),
@@ -188,7 +188,7 @@ def to_csv(meta: list[dict], bins: list[list[int]], f: str) -> None:
         if m
     ]
     lines = list(map(" ".join, info))
-    open(f, "w").write("\n".join([ass] + lines))
+    open(f, "w").write("\n".join([ass, *lines]))
 
 
 Compressable = Union["torch.nn.Module", dict]
@@ -217,7 +217,7 @@ def split_into_bins(group: list[IdxTensor], n_splits: int) -> list[list[IdxTenso
 
 
 def calculate_makespan(tensors: Sequence[Tensory]) -> int:
-    tentative_sizes = sorted([tensor_size(t) for t in possible_merge], reverse=True)
+    tentative_sizes = sorted([tensor_size(t) for t in tensors], reverse=True)
     part = partition.multifit_partition(tentative_sizes, NUM_THREADS)
     return max(map(sum, part))
 
@@ -345,7 +345,7 @@ def empty_cache() -> None:
     torch.cuda.empty_cache()
 
 
-def compress_pickle(model: Compressable, path: str | Path = default_path) -> float:
+def compress_pickle(model: Compressable, path: str | Path = default_path, chunk_size: int = 16) -> float:
     global torch
     import numpy as np
     import torch
@@ -388,7 +388,7 @@ def compress_pickle(model: Compressable, path: str | Path = default_path) -> flo
 
     for i, param in enumerate(parameters):
         param_path = dir / f"{i}.gz"
-        param_meta, size, new_size = compress_parameter(param, param_path)
+        param_meta, size, new_size = compress_parameter(param, param_path, chunk_size)
         meta.append(param_meta)
         total_size += size
         total_compressed_size += new_size

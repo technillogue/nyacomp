@@ -270,7 +270,7 @@ class DownloadProc {
 };
 
 
-int compress(py::bytes pybytes, const std::string filename) {
+int compress(py::bytes pybytes, const std::string filename, const int chunk_size_exponent = 16) {
   std::string bytes_str = pybytes;
   size_t input_buffer_len = bytes_str.size();
   std::vector<uint8_t> uncompressed_data(bytes_str.data(), bytes_str.data() + input_buffer_len);
@@ -284,7 +284,7 @@ int compress(py::bytes pybytes, const std::string filename) {
   CUDA_CHECK(cudaMemcpyAsync(device_input_ptrs, uncompressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
 
 
-  const int chunk_size = 1 << 16;
+  const int chunk_size = 1 << chunk_size_exponent;
   // DEFLATE is LZ77 dictionary + Huffman entropy coding
 
   // 0 : high-throughput, low compression ratio (default) // only supported, lolsob
@@ -1142,7 +1142,7 @@ class AsyncDecompressor {
 PYBIND11_MODULE(_nyacomp, m) {
   m.doc() = R"pbdoc(python bindings for nvcomp with torch)pbdoc";
 
-  m.def("compress", &compress, R"pbdoc(compress bytes to a file)pbdoc", py::arg("data"), py::arg("filename"));
+  m.def("compress", &compress, R"pbdoc(compress bytes to a file)pbdoc", py::arg("data"), py::arg("filename"), py::arg("chunk_size_exponent") = 16);
 
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 
