@@ -360,8 +360,12 @@ def compress_pickle(model: Compressable, path: str | Path = default_path, chunk_
     orig_tensors: list[torch.Tensor] = []
 
     def persistent_id(obj: Any) -> int | None:
-        # don't compress cpu tensors
-        if isinstance(obj, torch.Tensor) and obj.device.type != "cpu":
+        if isinstance(obj, torch.Tensor):
+            # don't compress cpu tensors
+            # maybe we should also skip tensors that are <1024?
+            # this might get serialized incorrectly but it's _probably_ fine
+            if obj.device.type == "cpu" or tensor_size(obj) < 1024::
+                return None
             i = len(orig_tensors)
             orig_tensors.append(obj.to("cpu"))
             return i

@@ -284,7 +284,7 @@ int compress(py::bytes pybytes, const std::string filename, const int chunk_size
   CUDA_CHECK(cudaMemcpyAsync(device_input_ptrs, uncompressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
 
 
-  const int chunk_size = 1 << chunk_size_exponent;
+  const size_t chunk_size = 1 << chunk_size_exponent;
   // DEFLATE is LZ77 dictionary + Huffman entropy coding
 
   // 0 : high-throughput, low compression ratio (default) // only supported, lolsob

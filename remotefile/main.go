@@ -16,6 +16,7 @@ var chunkSize = 1024 * 1024 // 1MB
 var client = &http.Client{}
 
 type DownloadBuffer struct {
+	url       string
 	data      [][]byte
 	mutex     sync.RWMutex
 	cond      *sync.Cond
@@ -23,8 +24,8 @@ type DownloadBuffer struct {
 	chunkPool sync.Pool
 }
 
-func NewBuffer() *DownloadBuffer {
-	b := &DownloadBuffer{}
+func NewBuffer(url string) *DownloadBuffer {
+	b := &DownloadBuffer{url: url}
 	b.cond = sync.NewCond(&b.mutex)
 	b.chunkPool = sync.Pool{
 		New: func() interface{} {
@@ -68,11 +69,11 @@ func (b *DownloadBuffer) IsDone() bool {
 	return b.done && len(b.data) == 0
 }
 
-func downloadToBuffer(url string, buf *DownloadBuffer) {
+func downloadToBuffer(buf *DownloadBuffer) {
 	startTime := time.Now()
-	resp, err := client.Get(url)
+	resp, err := client.Get(buf.url)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error fetching %s: %v\n", url, err)
+		fmt.Fprintf(os.Stderr, "Error fetching %s: %v\n", buf.url, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -81,7 +82,7 @@ func downloadToBuffer(url string, buf *DownloadBuffer) {
 		chunk := buf.chunkPool.Get().([]byte)
 		n, err := resp.Body.Read(chunk)
 		if n > 0 {
-			// maybe this should be in a goroutine?
+			// maybe this should be in a goroutine? it acquires a lock
 			buf.Enqueue(chunk[:n]) // Add the data to the buffer
 		}
 		if err == io.EOF {
@@ -93,51 +94,64 @@ func downloadToBuffer(url string, buf *DownloadBuffer) {
 			return
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error reading from %s: %v\n", url, err)
+			fmt.Fprintf(os.Stderr, "Error reading from %s: %v\n", resp.Request.URL, err)
 			return
 		}
 	}
 }
 
-func writeToStdout(url string, buf *DownloadBuffer) {
-	start := time.Now()
+func writeToStdout(buf *DownloadBuffer) {
+	totalElapsed := time.Duration(0)
 	size := 0
 	for {
 		chunk := buf.Dequeue()
 		defer buf.chunkPool.Put(chunk)
 		if chunk == nil && buf.IsDone() {
-			elapsed := time.Since(start)
-			throughput := float64(size) / elapsed.Seconds() / 1024 / 1024
-			// this is the total time which is a little unhelpful
-			fmt.Fprintf(os.Stderr, "Wrote to stdout in %s (%.2f MB/s)\n", elapsed, throughput)
+			throughput := float64(size) / totalElapsed.Seconds() / 1024 / 1024
+			fmt.Fprintf(os.Stderr, "Wrote %s to stdout in %s (%.2f MB/s)\n", buf.url, totalElapsed, throughput)
 			return
 		}
-		// use vmsplice to write chunk to stdout
-
-		// ssize_t vmsplice(int fd, const struct iovec *iov, unsigned long nr_segs, unsigned int flags);
-		// 	struct iovec {
-		// 		void  *iov_base;        /* Starting address */
-		// 		size_t iov_len;         /* Number of bytes */
-		// 	};
+		chunkStart := time.Now()
 		if os.Getenv("VMSPLICE") == "1" {
+			// use vmsplice to write chunk to stdout
+
+			// ssize_t vmsplice(int fd, const struct iovec *iov, unsigned long nr_segs, unsigned int flags);
+			// 	struct iovec {
+			// 		void  *iov_base;        /* Starting address */
+			// 		size_t iov_len;         /* Number of bytes */
+			// 	};
 			_, _, err := syscall.Syscall6(syscall.SYS_VMSPLICE, os.Stdout.Fd(), uintptr(unsafe.Pointer(&syscall.Iovec{
 				Base: &chunk[0],
 				Len:  uint64(len(chunk)),
 			})), 1, 0, 0, 0)
 
 			if err != 0 {
-				fmt.Fprintf(os.Stderr, "Error splicing %s to stdout: %v\n", url, err)
+				fmt.Fprintf(os.Stderr, "Error splicing %s to stdout: %v\n", buf.url, err)
 				return
 			}
 		} else {
 			_, err := os.Stdout.Write(chunk)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error writing %s to stdout: %v\n", url, err)
+				fmt.Fprintf(os.Stderr, "Error writing %s to stdout: %v\n", buf.url, err)
 				return
 			}
 		}
 		size += len(chunk)
+		totalElapsed += time.Since(chunkStart)
 	}
+}
+
+func downloadAllToBuffers(bufChan chan *DownloadBuffer) {
+	for _, url := range os.Args[1:] {
+		// ignore curl args
+		if url == "-s" || url == "-v" {
+			continue
+		}
+		buf := NewBuffer(url)
+		bufChan <- buf
+		go downloadToBuffer(buf)
+	}
+	close(bufChan)
 }
 
 func main() {
@@ -145,14 +159,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Usage: downloader <url1> <url2> ...")
 		os.Exit(1)
 	}
-	for _, url := range os.Args[1:] {
-		// ignore curl args
-		if url == "-s" || url == "-v" {
-			continue
-		}
-		buf := NewBuffer()
-		// download and write to stdout, but buffer download if stdout is full
-		go downloadToBuffer(url, buf)
-		writeToStdout(url, buf)
+	bufChan := make(chan *DownloadBuffer)
+	go downloadAllToBuffers(bufChan)
+	for buf := range bufChan {
+		writeToStdout(buf)
 	}
 }
