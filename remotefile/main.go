@@ -149,7 +149,7 @@ func downloadAllToBuffers(bufChan chan *DownloadBuffer) {
 		}
 		buf := NewBuffer(url)
 		bufChan <- buf
-		go downloadToBuffer(buf)
+		downloadToBuffer(buf)
 	}
 	close(bufChan)
 }
