@@ -128,7 +128,7 @@ else:
     HOST = ""
 
 
-def compress_parameter(param: Tensory, path: Path, chunk_size: int = 16) -> tuple[dict, int, int]:
+def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
     size = len(data)
 
@@ -148,7 +148,7 @@ def compress_parameter(param: Tensory, path: Path, chunk_size: int = 16) -> tupl
         new_size = path.stat().st_size
     else:
         print(f"compressing parameter to {path}")
-        new_size = _nyacomp.compress(data, str(path), chunk_size)
+        new_size = _nyacomp.compress(data, str(path))
     meta = {
         "filename": f"{HOST}/{path}",
         "shape": list(param.shape),
@@ -240,6 +240,7 @@ def calculate_makespan(tensors: Sequence[Tensory]) -> int:
 #             upper_bound = mid - 1
 #     return merge_tensors(tensors, best_maxsize)
 
+
 def merge_tensors(
     tensors: Sequence[Tensory], maxsize: int = 0
 ) -> tuple[list["torch.Tensor"], str]:
@@ -248,7 +249,9 @@ def merge_tensors(
     # prev: maxsize = max(map(tensor_size, tensors))
     # new:
     if not maxsize:
-        maxsize = sum(map(tensor_size, tensors)) / NUM_THREADS
+        server_slice_size = 1024 * 1024 * 500  # nginx "500m"
+        maxsize = max(server_slice_size, sum(map(tensor_size, tensors)) / NUM_THREADS)
+
     subgroups = []
 
     for shape, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):
@@ -345,7 +348,9 @@ def empty_cache() -> None:
     torch.cuda.empty_cache()
 
 
-def compress_pickle(model: Compressable, path: str | Path = default_path, chunk_size: int = 16) -> float:
+def compress_pickle(
+    model: Compressable, path: str | Path = default_path, chunk_size: int = 16
+) -> float:
     global torch
     import numpy as np
     import torch
@@ -364,7 +369,7 @@ def compress_pickle(model: Compressable, path: str | Path = default_path, chunk_
             # don't compress cpu tensors
             # maybe we should also skip tensors that are <1024?
             # this might get serialized incorrectly but it's _probably_ fine
-            if obj.device.type == "cpu" or tensor_size(obj) < 1024::
+            if obj.device.type == "cpu" or tensor_size(obj) < 1024:
                 return None
             i = len(orig_tensors)
             orig_tensors.append(obj.to("cpu"))
@@ -392,7 +397,7 @@ def compress_pickle(model: Compressable, path: str | Path = default_path, chunk_
 
     for i, param in enumerate(parameters):
         param_path = dir / f"{i}.gz"
-        param_meta, size, new_size = compress_parameter(param, param_path, chunk_size)
+        param_meta, size, new_size = compress_parameter(param, param_path)
         meta.append(param_meta)
         total_size += size
         total_compressed_size += new_size
