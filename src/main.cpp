@@ -246,7 +246,7 @@ class DownloadProc {
     } else
       posix_spawn_file_actions_adddup2(&actions, STDERR_FILENO, STDERR_FILENO);
     // spawn curl or custom curl that doesn't network backpressure on full pipe
-    int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), NULL);
+    int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), environ);
     if (retcode != 0) {
       debug("downloader args: " + pprint(curl_args));
       throw std::runtime_error("Failed to spawn curl subprocess. Exit code: " + std::to_string(retcode));
@@ -623,10 +623,12 @@ public:
   // Override the destructor
   ~SyncedGdeflateManager() {
     // Synchronize the stream before the GdeflateManager's destructor is called
-    log("SyncedGdeflateManager " + name + " called");
-    auto start = std::chrono::steady_clock::now();
+    log("~SyncedGdeflateManager " + name + " called");
+    auto start = maybe_now();
     CUDA_CHECK(cudaStreamSynchronize(stream_));
-    log("~SyncedGdeflateManager " + name + " took " + pprint(std::chrono::steady_clock::now() - start));
+    auto elapsed = maybe_now() - start;
+    if (elapsed > std::chrono::milliseconds(0))
+      debug("~SyncedGdeflateManager " + name + " took " + pprint(std::chrono::steady_clock::now() - start));
   }
 
 private:

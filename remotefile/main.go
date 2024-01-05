@@ -13,7 +13,13 @@ import (
 
 var chunkSize = 1024 * 1024 // 1MB
 
-var client = &http.Client{}
+var client *http.Client
+
+func init() {
+	client = &http.Client{
+		Transport: newTransportWithCacheIP(),
+	}
+}
 
 type DownloadBuffer struct {
 	url       string
@@ -22,6 +28,7 @@ type DownloadBuffer struct {
 	cond      *sync.Cond
 	done      bool
 	chunkPool sync.Pool
+	// dataChan  chan []byte
 }
 
 func NewBuffer(url string) *DownloadBuffer {
@@ -41,6 +48,19 @@ func (b *DownloadBuffer) Enqueue(chunk []byte) {
 	b.cond.Signal() // Signal to the writer that there's new data
 	b.mutex.Unlock()
 }
+
+// func (b *DownloadBuffer) actuallySend() {
+// 	for {
+// 		chunk := <-b.dataChan
+// 		if chunk == nil {
+// 			return
+// 		}
+// 		b.mutex.Lock()
+// 		b.data = append(b.data, chunk)
+// 		b.cond.Signal() // Signal to the writer that there's new data
+// 		b.mutex.Unlock()
+// 	}
+// }
 
 func (b *DownloadBuffer) Dequeue() []byte {
 	b.mutex.Lock()
@@ -141,26 +161,24 @@ func writeToStdout(buf *DownloadBuffer) {
 	}
 }
 
-func downloadAllToBuffers(bufChan chan *DownloadBuffer) {
-	for _, url := range os.Args[1:] {
-		// ignore curl args
-		if url == "-s" || url == "-v" {
-			continue
-		}
-		buf := NewBuffer(url)
-		bufChan <- buf
-		downloadToBuffer(buf)
-	}
-	close(bufChan)
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "Usage: downloader <url1> <url2> ...")
 		os.Exit(1)
 	}
 	bufChan := make(chan *DownloadBuffer)
-	go downloadAllToBuffers(bufChan)
+	go func(bufChan chan *DownloadBuffer) {
+		for _, url := range os.Args[1:] {
+			// ignore curl args
+			if url == "-s" || url == "-v" {
+				continue
+			}
+			buf := NewBuffer(url)
+			bufChan <- buf
+			downloadToBuffer(buf)
+		}
+		close(bufChan)
+	}(bufChan)
 	for buf := range bufChan {
 		writeToStdout(buf)
 	}

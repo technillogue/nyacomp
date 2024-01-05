@@ -1,3 +1,4 @@
+0.1.5 pass envvars to downloader + remotefile works with regional cache
 0.1.4 increase merge_tensors maxsize and make compression block size configurable
 0.1.3 pass curl value by value
 0.1.2 launch downloads earlier
