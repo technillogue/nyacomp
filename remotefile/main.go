@@ -144,6 +144,8 @@ func writeToStdout(buf *DownloadBuffer) {
 				Base: &chunk[0],
 				Len:  uint64(len(chunk)),
 			})), 1, 0, 0, 0)
+			// if we used SPLICE_F_GIFT, we could not reuse the buffer
+			// we're not using it, so it's fine, however this might be slower?
 
 			if err != 0 {
 				fmt.Fprintf(os.Stderr, "Error splicing %s to stdout: %v\n", buf.url, err)

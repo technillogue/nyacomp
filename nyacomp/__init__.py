@@ -349,7 +349,7 @@ def empty_cache() -> None:
 
 
 def compress_pickle(
-    model: Compressable, path: str | Path = default_path, chunk_size: int = 16
+    model: Compressable, path: str | Path = default_path
 ) -> float:
     global torch
     import numpy as np

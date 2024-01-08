@@ -294,6 +294,7 @@ int compress(py::bytes pybytes, const std::string filename, const int chunk_size
   // maybe it's time to rethink this? old testing suggested skipping dictionary could actually give better throughput
   // but 1 also changes some huffman settings that would have been good
   // just turning up the chunk size to help the entropy coder might be better
+  // nvcompBatchedGdeflateOpts_t opts = { compression_setting };
   GdeflateManager nvcomp_manager{ chunk_size, nvcompBatchedGdeflateDefaultOpts, stream, NoComputeNoVerify };
 
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);
@@ -348,6 +349,8 @@ torch::ScalarType type_for_name(std::string type_name) {
     return torch::kFloat32;
   else if (type_name == "float64")
     return torch::kFloat64;
+  else if (type_name == "bfloat16")
+    return torch::kBFloat16;
   else
     throw std::runtime_error("Unknown type name: " + type_name);
 }
@@ -830,7 +833,7 @@ std::vector<torch::Tensor> batch_decompress(
           auto start = std::chrono::steady_clock::now();
           debug_event(prefix + "synchronizing copy_done event " + pprint(copy_done));
           CUDA_CHECK(cudaEventSynchronize(copy_done)); // wait for previous copy to finish before changing host_compressed_data
-          log(prefix + "before using host_compressed_data, waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
+          debug(prefix + "before using host_compressed_data, waiting for previous copy took " + pprint(std::chrono::steady_clock::now() - start));
         }
         else {
           CUDA_CHECK(cudaEventCreateWithFlags(&thread_copy_done[thread_id], cudaEventDisableTiming));
@@ -896,7 +899,7 @@ std::vector<torch::Tensor> batch_decompress(
             CUDA_CHECK(cudaEventRecord(circle_done_events[buffer_id], stream));
           }
           thread_copy_done[thread_id] = circle_done_events[buffer_id];
-          log(prefix + "took " + pprint(sync_time) + " to sync " + std::to_string(chunks) + " chunks");
+          debug(prefix + "took " + pprint(sync_time) + " to sync " + std::to_string(chunks) + " chunks");
         }
         std::chrono::microseconds copy_time = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - copy_begin);
         std::string pretty_chunk_size = pprint(std::min(CHUNK_SIZE, input_buffer_len), 0);
@@ -989,7 +992,7 @@ std::vector<torch::Tensor> batch_decompress(
           // decomp_nvcomp_manager->decompress(static_cast<uint8_t*>(tensors[i].data_ptr()), comp_buffer, decomp_config);
           ms_t decomp_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - decomp_begin);
 
-          log(prefix + "decompressed in " + pprint(decomp_time) + ", freeing with stream " + stream_name + "");
+          debug(prefix + "decompressed in " + pprint(decomp_time) + ", freeing with stream " + stream_name + "");
           if (!REUSE_COMP_BUFFER) {
             // need to not free comp_buffer until the decompression is complete, so we should 
             CUDA_CHECK(cudaFreeAsync(comp_buffer, stream));
@@ -1000,7 +1003,7 @@ std::vector<torch::Tensor> batch_decompress(
         }
 
         ms_t file_elapsed_time = std::chrono::duration_cast<ms_t>(std::chrono::steady_clock::now() - file_start_time);
-
+        // ideally in debug mode this would mention copy and decomp time 
         log(prefix + "processed file in " + pprint(file_elapsed_time) + " (" + pprint_throughput(files[i].decompressed_size, file_elapsed_time) + ")");
         thread_copy_time += copy_time;
       }
@@ -1015,8 +1018,7 @@ std::vector<torch::Tensor> batch_decompress(
       auto thread_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - thread_start);
       auto thread_elapsed_s = std::chrono::duration_cast<std::chrono::seconds>(thread_elapsed);
 
-      int throughput = std::round((float)thread_decompressed_size  / (float)thread_elapsed.count() * 1000 / 1024.0f / 1024.0f);
-      log("thread " + std::to_string(thread_id) + " processed " + std::to_string(thread_decompressed_size  / 1024) + "kb in " + std::to_string(thread_elapsed.count()) + " ms (" + std::to_string(throughput) + " MB/s) - " + std::to_string(indexes.size()) + " files");
+      log("thread " + std::to_string(thread_id) + " processed " + pprint(thread_decompressed_size) + " in " + pprint(thread_elapsed) + " (" + pprint_throughput(thread_decompressed_size, thread_elapsed) + " ) - " + std::to_string(indexes.size()) + " files");
       // std::this_thread::sleep_for(std::chrono::milliseconds(getenv("SLEEP", 3)*1000));
 
       // find the file that's all the small tensors, decompress, then create tensors from that with from_blob
