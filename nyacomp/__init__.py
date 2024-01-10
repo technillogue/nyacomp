@@ -51,7 +51,7 @@ if os.getenv("SYMLINK_CUDART"):
 with timer("import _nyacomp"):
     import _nyacomp
 
-if not os.getenv("NO_PRELOAD"):
+if not os.getenv("NO_PRELOAD") and not os.getenv("LOAD_UNCOMPRESSED"):
     path = os.getenv("PRELOAD_PATH", "data/nya/meta.csv")
     with timer("proceeding with importing; launching decompression"):
         decompressor = _nyacomp.AsyncDecompressor(path)
@@ -349,7 +349,7 @@ def empty_cache() -> None:
 
 
 def compress_pickle(
-    model: Compressable, path: str | Path = default_path
+    model: Compressable, path: str | Path = default_path, algo: int = 0
 ) -> float:
     global torch
     import numpy as np
@@ -357,6 +357,7 @@ def compress_pickle(
 
     sys.modules[__name__].np = np  # import here so tensor_bytes can find it
 
+    assert algo in {0, 1, 2}, "invalid compression algorithm"
     if isinstance(path, str):
         path = Path(path)
     dir = path.parent / "nya"
@@ -397,7 +398,7 @@ def compress_pickle(
 
     for i, param in enumerate(parameters):
         param_path = dir / f"{i}.gz"
-        param_meta, size, new_size = compress_parameter(param, param_path)
+        param_meta, size, new_size = compress_parameter(param, param_path, algo)
         meta.append(param_meta)
         total_size += size
         total_compressed_size += new_size

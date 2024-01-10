@@ -24,6 +24,7 @@ func init() {
 type DownloadBuffer struct {
 	url       string
 	data      [][]byte
+	lengths   []int
 	mutex     sync.RWMutex
 	cond      *sync.Cond
 	done      bool
@@ -42,9 +43,10 @@ func NewBuffer(url string) *DownloadBuffer {
 	return b
 }
 
-func (b *DownloadBuffer) Enqueue(chunk []byte) {
+func (b *DownloadBuffer) Enqueue(chunk []byte, length int) {
 	b.mutex.Lock()
 	b.data = append(b.data, chunk)
+	b.lengths = append(b.lengths, length)
 	b.cond.Signal() // Signal to the writer that there's new data
 	b.mutex.Unlock()
 }
@@ -62,18 +64,20 @@ func (b *DownloadBuffer) Enqueue(chunk []byte) {
 // 	}
 // }
 
-func (b *DownloadBuffer) Dequeue() []byte {
+func (b *DownloadBuffer) Dequeue() ([]byte, int) {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	for len(b.data) == 0 {
 		if b.done {
-			return nil
+			return nil, 0
 		}
 		b.cond.Wait() // Wait for new data to be added or downloading to be marked as done
 	}
 	chunk := b.data[0]
 	b.data = b.data[1:]
-	return chunk
+	length := b.lengths[0]
+	b.lengths = b.lengths[1:]
+	return chunk, length
 }
 
 func (b *DownloadBuffer) MarkDone() {
@@ -100,10 +104,13 @@ func downloadToBuffer(buf *DownloadBuffer) {
 
 	for {
 		chunk := buf.chunkPool.Get().([]byte)
+		// memset chunk memory to 0
+		for i := range chunk {
+			chunk[i] = 0
+		}
 		n, err := resp.Body.Read(chunk)
 		if n > 0 {
-			// maybe this should be in a goroutine? it acquires a lock
-			buf.Enqueue(chunk[:n]) // Add the data to the buffer
+			buf.Enqueue(chunk, n) // Add the data to the buffer
 		}
 		if err == io.EOF {
 			buf.MarkDone()
@@ -124,7 +131,7 @@ func writeToStdout(buf *DownloadBuffer) {
 	totalElapsed := time.Duration(0)
 	size := 0
 	for {
-		chunk := buf.Dequeue()
+		chunk, length := buf.Dequeue()
 		defer buf.chunkPool.Put(chunk)
 		if chunk == nil && buf.IsDone() {
 			throughput := float64(size) / totalElapsed.Seconds() / 1024 / 1024
@@ -142,7 +149,7 @@ func writeToStdout(buf *DownloadBuffer) {
 			// 	};
 			_, _, err := syscall.Syscall6(syscall.SYS_VMSPLICE, os.Stdout.Fd(), uintptr(unsafe.Pointer(&syscall.Iovec{
 				Base: &chunk[0],
-				Len:  uint64(len(chunk)),
+				Len:  uint64(length),
 			})), 1, 0, 0, 0)
 			// if we used SPLICE_F_GIFT, we could not reuse the buffer
 			// we're not using it, so it's fine, however this might be slower?
@@ -152,7 +159,7 @@ func writeToStdout(buf *DownloadBuffer) {
 				return
 			}
 		} else {
-			_, err := os.Stdout.Write(chunk)
+			_, err := os.Stdout.Write(chunk[:length])
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error writing %s to stdout: %v\n", buf.url, err)
 				return

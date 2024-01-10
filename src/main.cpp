@@ -270,7 +270,7 @@ class DownloadProc {
 };
 
 
-int compress(py::bytes pybytes, const std::string filename, const int chunk_size_exponent = 16) {
+int compress(py::bytes pybytes, const std::string filename, const int algo = 0) {
   std::string bytes_str = pybytes;
   size_t input_buffer_len = bytes_str.size();
   std::vector<uint8_t> uncompressed_data(bytes_str.data(), bytes_str.data() + input_buffer_len);
@@ -284,7 +284,7 @@ int compress(py::bytes pybytes, const std::string filename, const int chunk_size
   CUDA_CHECK(cudaMemcpyAsync(device_input_ptrs, uncompressed_data.data(), input_buffer_len, cudaMemcpyDefault, stream));
 
 
-  const size_t chunk_size = 1 << chunk_size_exponent;
+  const size_t chunk_size = 1 << 16;
   // DEFLATE is LZ77 dictionary + Huffman entropy coding
 
   // 0 : high-throughput, low compression ratio (default) // only supported, lolsob
@@ -293,9 +293,8 @@ int compress(py::bytes pybytes, const std::string filename, const int chunk_size
 
   // maybe it's time to rethink this? old testing suggested skipping dictionary could actually give better throughput
   // but 1 also changes some huffman settings that would have been good
-  // just turning up the chunk size to help the entropy coder might be better
-  // nvcompBatchedGdeflateOpts_t opts = { compression_setting };
-  GdeflateManager nvcomp_manager{ chunk_size, nvcompBatchedGdeflateDefaultOpts, stream, NoComputeNoVerify };
+  nvcompBatchedGdeflateOpts_t opts = { algo };
+  GdeflateManager nvcomp_manager{ chunk_size, opts, stream, ComputeAndVerifyIfPresent };
 
   CompressionConfig comp_config = nvcomp_manager.configure_compression(input_buffer_len);
   uint8_t* comp_buffer;
@@ -1146,7 +1145,7 @@ class AsyncDecompressor {
 PYBIND11_MODULE(_nyacomp, m) {
   m.doc() = R"pbdoc(python bindings for nvcomp with torch)pbdoc";
 
-  m.def("compress", &compress, R"pbdoc(compress bytes to a file)pbdoc", py::arg("data"), py::arg("filename"), py::arg("chunk_size_exponent") = 16);
+  m.def("compress", &compress, R"pbdoc(compress bytes to a file. algo is 0/1/2 default/fast compression/best compression.)pbdoc", py::arg("data"), py::arg("filename"), py::arg("algo") = 0);
 
   m.def("decompress", &decompress, "decompress to a new tensor", py::arg("filename"), py::arg("shape"), py::arg("dtype"));
 

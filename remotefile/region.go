@@ -49,6 +49,13 @@ func getCWRegion(addr string) (string, error) {
 }
 
 func getCacheIP() (string, error) {
+	if os.Getenv("DISABLE_REMOTEFILE_CACHE") != "" {
+		return "", errors.New("DISABLE_REMOTEFILE_CACHE is set")
+	}
+	if override := os.Getenv("CACHE_IP_OVERRIDE"); override != "" {
+		fmt.Fprintf(os.Stderr, "Remotefile using cache IP %s from CACHE_IP_OVERRIDE\n", override)
+		return override, nil
+	}
 	nodeIP := os.Getenv("PGET_HOST_IP")
 	if nodeIP == "" {
 		return "", errors.New("PGET_HOST_IP env var not set")
