@@ -147,7 +147,7 @@ std::chrono::steady_clock::time_point maybe_now() {
   return std::chrono::steady_clock::now();
 }
 
-std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
+std::vector<uint8_t> load_file(const std::string& filename) {
   std::ifstream file(filename, std::ios::binary | std::ios::ate);
   if (!file.is_open())
     throw std::runtime_error("Failed to open file: " + filename);
@@ -160,23 +160,12 @@ std::pair<std::vector<uint8_t>, size_t> load_file(const std::string& filename) {
     throw std::runtime_error("Failed to read file: " + filename);
   debug("read " + pprint(file_size) + " bytes from " + filename);
 
-  return std::make_pair(buffer, file_size);
+  return buffer;
 }
 
 std::pair<uint8_t*, size_t> load_file_wrapper(const std::string& filename) {
-  std::ifstream file(filename, std::ios::binary | std::ios::ate);
-  if (!file.is_open())
-    throw std::runtime_error("Failed to open file: " + filename);
-
-  size_t file_size = static_cast<size_t>(file.tellg());
-  uint8_t* buffer = new uint8_t[file_size];
-
-  file.seekg(0, std::ios::beg);
-  if (!file.read(reinterpret_cast<char*>(buffer), file_size))
-    throw std::runtime_error("Failed to read file: " + filename);
-  debug("read " + pprint(file_size) + " bytes from " + filename);
-
-  return std::make_pair(buffer, file_size);
+  auto buffer = load_file(filename);
+  return std::make_pair(buffer.data(), buffer.size());
 }
 
 
@@ -361,9 +350,8 @@ torch::Tensor make_tensor(const std::vector<int64_t>& shape, const std::string& 
 
 
 torch::Tensor decompress(const std::string filename, std::vector<int64_t> shape, std::string dtype) {
-  std::vector<uint8_t> compressed_data;
-  size_t input_buffer_len;
-  std::tie(compressed_data, input_buffer_len) = load_file(filename);
+  std::vector<uint8_t> compressed_data = load_file(filename);
+  size_t input_buffer_len = compressed_data.size();
   uint8_t* comp_buffer;
 
   std::chrono::steady_clock::time_point copy_begin = std::chrono::steady_clock::now();
@@ -889,7 +877,7 @@ std::vector<torch::Tensor> batch_decompress(
             auto fread_result = fread(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read, 1, file);
             thread_read_time += (maybe_now() - start);
             if (fread_result != 1) {
-              perror(("freading returned " + std::to_string(fread_result) + " instead of 1, error:").c_str());
+              perror(("freading returned " + std::to_string(fread_result) + " instead of 1, error").c_str());
               throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + "): " + std::to_string(fread_result) + ", eof: " + std::to_string(feof(file)));
             }
             CUDA_CHECK(cudaMemcpyAsync(comp_buffer + already_read, host_buffers[buffer_id], to_read, cudaMemcpyDefault, stream));
