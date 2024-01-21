@@ -253,9 +253,11 @@ class DownloadProc {
   ~DownloadProc() {
     if (pid == -1)
       return;
-    log("killing downloader process");
     kill(pid, SIGTERM);
-    waitpid(pid, NULL, 0);
+    int status;
+    waitpid(pid, &status, 0);
+    int code = ((WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? -WTERMSIG(status) : 0)))
+    log("killed downloader process. exit code: " + std::to_string(code));
   }
 
  private:
@@ -878,11 +880,11 @@ std::vector<torch::Tensor> batch_decompress(
             }
             // replace this part with reading from a connection, or an existing fully downloaded buffer
             auto start = maybe_now();
-            auto fread_result = fread(reinterpret_cast<char*>(host_buffers[buffer_id]), to_read, 1, file);
+            auto fread_result = fread(reinterpret_cast<char*>(host_buffers[buffer_id]), 1, to_read, file);
             thread_read_time += (maybe_now() - start);
-            if (fread_result != 1) {
-              perror(("freading returned " + std::to_string(fread_result) + " instead of 1, error").c_str());
-              throw std::runtime_error("Could not read file " + files[i].filename + " (size " + pprint(input_buffer_len) + "): " + std::to_string(fread_result) + ", eof: " + std::to_string(feof(file)));
+            if (fread_result < to_read) {
+              perror(("freading returned " + std::to_string(fread_result) + " instead of " + std::to_string(to_read) + " error").c_str());
+              throw std::runtime_error("Could not read file " + files[i].filename + ". Read " + std::to_string(fread_result) + " instead of " + std::to_string(to_read) + " bytes. EOF: " + std::to_string(feof(file)) + ". Is the file too short, or did the downloader fail?");
             }
             CUDA_CHECK(cudaMemcpyAsync(comp_buffer + already_read, host_buffers[buffer_id], to_read, cudaMemcpyDefault, stream));
             already_read += to_read;
