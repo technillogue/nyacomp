@@ -222,24 +222,26 @@ def calculate_makespan(tensors: Sequence[Tensory]) -> int:
     return max(map(sum, part))
 
 
-# def iterative_merge_tensors(
-#     tensors: Sequence[Tensory],
-# ) -> tuple[list["torch.Tensor"], str]:
-#     original_sizes = [tensor_size(t) for t in tensors]
-#     lower_bound = max(original_sizes)
-#     best_maxsize = upper_bound = 2 * sum(original_sizes) / NUM_THREADS
-#     best_makespan = calculate_makespan(merge_tensors(tensors, upper_bound))
-#     while lower_bound <= upper_bound:
-#         mid = (lower_bound + upper_bound) // 2
-#         makespan = calculate_makespan(merge_tensors(tensors, mid))
-#         if makespan < best_makespan:
-#             best_makespan = makespan
-#             best_maxsize = mid
-#             lower_bound = mid + 1
-#         else:
-#             upper_bound = mid - 1
-#     return merge_tensors(tensors, best_maxsize)
+def iterative_merge_tensors(
+    tensors: Sequence[Tensory],
+) -> tuple[list["torch.Tensor"], str]:
+    original_sizes = [tensor_size(t) for t in tensors]
+    lower_bound = max(sum(original_sizes) / NUM_THREADS, *original_sizes)
+    upper_bound = max(2 * sum(original_sizes) / NUM_THREADS, *original_sizes)
+    best_maxsize = upper_bound
+    best_makespan = calculate_makespan(merge_tensors(tensors, upper_bound))
+    while lower_bound <= upper_bound:
+        mid = (lower_bound + upper_bound) // 2
+        makespan = calculate_makespan(merge_tensors(tensors, mid))
+        if makespan < best_makespan:
+            best_makespan = makespan
+            best_maxsize = mid
+            lower_bound = mid + 1
+        else:
+            upper_bound = mid - 1
+    return merge_tensors(tensors, best_maxsize)
 
+server_slice_size = 1024 * 1024 * 500  # nginx "500m"
 
 def merge_tensors(
     tensors: Sequence[Tensory], maxsize: int = 0
@@ -249,8 +251,8 @@ def merge_tensors(
     # prev: maxsize = max(map(tensor_size, tensors))
     # new:
     if not maxsize:
-        server_slice_size = 1024 * 1024 * 500  # nginx "500m"
-        maxsize = max(server_slice_size, sum(map(tensor_size, tensors)) / NUM_THREADS)
+        maxsize = sum(map(tensor_size, tensors)) / NUM_THREADS
+    maxsize = max(server_slice_size, maxsize)
 
     subgroups = []
 
@@ -312,7 +314,7 @@ def compress(model: Compressable, path: str | Path = default_path) -> float:
     dir = path.parent / "nya"
     dir.mkdir(exist_ok=True)
 
-    parameters, info = merge_tensors(orig_parameters)  # hmm
+    parameters, info = iterative_merge_tensors(orig_parameters)  # hmm
     open(path.parent / MERGE_INFO_FNAME, "w").write(info)
 
     total_size = 0.0
@@ -635,6 +637,7 @@ if __name__ == "__main__" or os.getenv("RUN_MAIN"):
                 model = transformers.CLIPModel.from_pretrained(
                     "openai/clip-vit-base-patch16",  # local_files_only=True
                 )
+                model.to("cuda")
         torch.save(model, "/tmp/model.pth")
         # model = torch.load("/tmp/clip.pth", map_location="cpu")
         compress_pickle(model, model_path)

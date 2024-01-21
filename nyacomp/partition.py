@@ -48,13 +48,18 @@ def multifit_partition(sizes: list[int], bins: int = 32, k: int = 20) -> list[li
 
     return solution
 
-
-@functools.cache
-def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
+def to_idx(sizes: list[int], bins: list[list[int]]) -> list[list[int]]:
     indx = defaultdict(list)
     for i, size in enumerate(sizes):
         indx[size].append(i)
+    result = [[indx[size].pop(0) for size in bin] for bin in bins]
+    for bin in indx.values():
+        assert len(bin) == 0, f"unexpected remaining tensor {len(bin)}"
+    return result
 
+
+@functools.cache
+def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
     ordered = sorted(sizes, reverse=True)
     # bins = greedy_partition(sizes, n_bins)
     bins = multifit_partition(ordered, n_bins)
@@ -68,17 +73,15 @@ def massage(sizes: tuple[int], n_bins: int = 32) -> list[list[int]]:
         biggest.remove(moved)
         bins[empty].append(moved)
 
+    # move the biggest file to the begining
+    # maybe not necessary anymore because of chunking?
     for bin in bins:
         biggest_file = max(bin)
         bin.remove(biggest_file)
         bin.insert(0, biggest_file)
         # might be not unreasonable to shuffle the other items to reduce correlation in time
 
-    result = [[indx[size].pop(0) for size in bin] for bin in bins]
-    for bin in indx.values():
-        assert len(bin) == 0, f"unexpected remaining tensor {len(bin)}"
-    return result
-
+    return to_idx(sizes, bins)
 
 ### old or experimental below
 

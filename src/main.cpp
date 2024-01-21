@@ -238,7 +238,11 @@ class DownloadProc {
     int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), environ);
     if (retcode != 0) {
       debug("downloader args: " + pprint(curl_args));
-      throw std::runtime_error("Failed to spawn curl subprocess. Exit code: " + std::to_string(retcode));
+      if (pid == -1) 
+        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode));
+      int status;
+      waitpid(pid, &status, 0);
+      throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", exit code: " + std::to_string(status));
     }
     // close write end of the pipe
     close(pipefd[1]);
@@ -927,7 +931,7 @@ std::vector<torch::Tensor> batch_decompress(
             decomp_nvcomp_manager = std::make_shared<SyncedGdeflateManager>(1 << 16, nvcompBatchedGdeflateDefaultOpts, stream, name); // 1 << 16 is 64KB, 0 is fast compression
             // 1 << 16 is 64KB, 0 is fast compression
             managers[job_number % streams_per_thread] = decomp_nvcomp_manager;
-            log("created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + stream_name + " (job " + std::to_string(job_number) + ")");
+            log(prefix + "created manager in " + pprint(std::chrono::steady_clock::now() - create_manager_begin) + " for stream " + stream_name);
           }
 
           auto config_begin = std::chrono::steady_clock::now();
