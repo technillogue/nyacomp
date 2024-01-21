@@ -1,4 +1,4 @@
-def compress(data: bytes, filename: str, chunk_size_exponent: int) -> int:
+def compress(data: bytes, filename: str, algo: int) -> int:
     ...
 
 def decompress(filename: str, shape: list[int], dtype: str) -> "torch.Tensor":

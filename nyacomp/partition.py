@@ -48,7 +48,7 @@ def multifit_partition(sizes: list[int], bins: int = 32, k: int = 20) -> list[li
 
     return solution
 
-def to_idx(sizes: list[int], bins: list[list[int]]) -> list[list[int]]:
+def to_idx(sizes: tuple[int], bins: list[list[int]]) -> list[list[int]]:
     indx = defaultdict(list)
     for i, size in enumerate(sizes):
         indx[size].append(i)

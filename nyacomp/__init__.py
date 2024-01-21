@@ -128,7 +128,9 @@ else:
     HOST = ""
 
 
-def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
+def compress_parameter(
+    param: Tensory, path: Path, algo: int = 0
+) -> tuple[dict, int, int]:
     data = tensor_bytes(param.data.detach().cpu())
     size = len(data)
 
@@ -148,7 +150,7 @@ def compress_parameter(param: Tensory, path: Path) -> tuple[dict, int, int]:
         new_size = path.stat().st_size
     else:
         print(f"compressing parameter to {path}")
-        new_size = _nyacomp.compress(data, str(path))
+        new_size = _nyacomp.compress(data, str(path), algo)
     meta = {
         "filename": f"{HOST}/{path}",
         "shape": list(param.shape),
@@ -241,7 +243,9 @@ def iterative_merge_tensors(
             upper_bound = mid - 1
     return merge_tensors(tensors, best_maxsize)
 
+
 server_slice_size = 1024 * 1024 * 500  # nginx "500m"
+
 
 def merge_tensors(
     tensors: Sequence[Tensory], maxsize: int = 0
@@ -257,7 +261,7 @@ def merge_tensors(
     subgroups = []
 
     for shape, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):
-        group = list(group)
+        group: list = list(group)
         groupsize = tensor_size(group[0][1]) * len(group)
         if groupsize >= maxsize:
             # split the group into n groups such that the splits are close to equal size
@@ -484,7 +488,6 @@ def get_tensors(path: Path) -> list["torch.Tensor"]:
         except (RuntimeError, ValueError) as e:
             print(f"decompressor.get errored: {e}")
             raise e
-            sys.exit(1)
     with timer("batch_decompress"):
         with annotate("batch_decompress"):
             if os.getenv("PYTHON_ARGS"):
