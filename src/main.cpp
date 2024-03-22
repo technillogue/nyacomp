@@ -242,7 +242,15 @@ class DownloadProc {
         throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode));
       int status;
       waitpid(pid, &status, 0);
-      throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", exit code: " + std::to_string(status));
+      // decode status
+      if (WIFEXITED(status))
+        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", exit code: " + std::to_string(WEXITSTATUS(status)));
+      else if (WIFSIGNALED(status))
+        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", exit signal: " + std::to_string(WTERMSIG(status)));
+      else if (WIFSTOPPED(status))
+        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", stop signal: " + std::to_string(WSTOPSIG(status)));
+      else
+        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", unknown status: " + std::to_string(status));
     }
     // close write end of the pipe
     close(pipefd[1]);
@@ -256,7 +264,7 @@ class DownloadProc {
     kill(pid, SIGTERM);
     int status;
     waitpid(pid, &status, 0);
-    int code = ((WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? -WTERMSIG(status) : 0)))
+    int code = ((WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? -WTERMSIG(status) : 0)));
     log("killed downloader process. exit code: " + std::to_string(code));
   }
 

@@ -1,3 +1,4 @@
+0.1.7 decode downloader exit code. iterative merge tensors.
 0.1.6 algo arg for compression, respect LOAD_UNCOMPRESSED, fix vmsplice
 0.1.5 pass envvars to downloader + remotefile works with regional cache
 0.1.4 increase merge_tensors maxsize and make compression block size configurable

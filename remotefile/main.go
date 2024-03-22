@@ -93,12 +93,12 @@ func (b *DownloadBuffer) IsDone() bool {
 	return b.done && len(b.data) == 0
 }
 
-func downloadToBuffer(buf *DownloadBuffer) {
+func downloadToBuffer(buf *DownloadBuffer) int64 {
 	startTime := time.Now()
 	resp, err := client.Get(buf.url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error fetching %s: %v\n", buf.url, err)
-		return
+		return 0
 	}
 	defer resp.Body.Close()
 
@@ -118,11 +118,11 @@ func downloadToBuffer(buf *DownloadBuffer) {
 			throughput := float64(resp.ContentLength) / elapsed.Seconds() / 1024 / 1024
 			fmt.Fprintf(os.Stderr, "Downloaded %s in %s (%.2f MB/s)\n", resp.Request.URL, elapsed, throughput)
 			buf.chunkPool.Put(chunk)
-			return
+			return resp.ContentLength
 		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error reading from %s: %v\n", resp.Request.URL, err)
-			return
+			return 0
 		}
 	}
 }
@@ -177,6 +177,8 @@ func main() {
 	}
 	bufChan := make(chan *DownloadBuffer)
 	go func(bufChan chan *DownloadBuffer) {
+		total_size := int64(0)
+		start := time.Now()
 		for _, url := range os.Args[1:] {
 			// ignore curl args
 			if url == "-s" || url == "-v" {
@@ -184,8 +186,11 @@ func main() {
 			}
 			buf := NewBuffer(url)
 			bufChan <- buf
-			downloadToBuffer(buf)
+			total_size += downloadToBuffer(buf)
 		}
+		elapsed := time.Since(start)
+		throughput := float64(total_size) / elapsed.Seconds() / 1024 / 1024
+		fmt.Fprintf(os.Stderr, "Overall downloaded %d MB in %s (%.2f MB/s)\n", total_size/1024/1024, elapsed, throughput)
 		close(bufChan)
 	}(bufChan)
 	for buf := range bufChan {
