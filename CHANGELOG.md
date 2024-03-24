@@ -1,3 +1,4 @@
+0.1.7.1 marginally better downloader error messages
 0.1.7 decode downloader exit code. iterative merge tensors.
 0.1.6 algo arg for compression, respect LOAD_UNCOMPRESSED, fix vmsplice
 0.1.5 pass envvars to downloader + remotefile works with regional cache

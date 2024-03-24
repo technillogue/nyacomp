@@ -257,7 +257,6 @@ def merge_tensors(
     if not maxsize:
         maxsize = sum(map(tensor_size, tensors)) / NUM_THREADS
     maxsize = max(server_slice_size, maxsize)
-
     subgroups = []
 
     for shape, group in it.groupby(sorted(real_parameter_idx, key=grouper), grouper):

@@ -194,6 +194,17 @@ void widen_pipe(int fd) {
   }
 }
 
+std::string parse_waitpid(int status) {
+  if (WIFEXITED(status))
+    return "exited with status " + std::to_string(WEXITSTATUS(status));
+  else if (WIFSIGNALED(status))
+    return "killed by signal " + std::to_string(-WTERMSIG(status));
+  else if (WIFSTOPPED(status))
+    return "stopped by signal " + std::to_string(WSTOPSIG(status));
+  else
+    return "unknown status " + std::to_string(status);
+}
+
 const char* DOWNLOADER_PATH = getenv_str("DOWNLOADER_PATH", "/usr/bin/curl");
 bool DOWNLOAD_LOG = getenv("DOWNLOAD_LOG", 0);
 bool SKIP_SETPIPE_SZ = getenv("SKIP_SETPIPE_SZ", 0);
@@ -237,20 +248,16 @@ class DownloadProc {
     // spawn curl or custom curl that doesn't network backpressure on full pipe
     int retcode = posix_spawn(&pid, DOWNLOADER_PATH, &actions, NULL, curl_args.data(), environ);
     if (retcode != 0) {
+      std::string error_code = "errno " + std::to_string(retcode) + " " + strerror(retcode);
+      std::string error_msg = "Failed to posix_spawn downloader " + std::string(DOWNLOADER_PATH);
       debug("downloader args: " + pprint(curl_args));
+      perror((error_msg + " " + error_code).c_str());
       if (pid == -1) 
-        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode));
+        throw std::runtime_error(error_msg + ": no pid, " + error_code);
       int status;
       waitpid(pid, &status, 0);
-      // decode status
-      if (WIFEXITED(status))
-        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", exit code: " + std::to_string(WEXITSTATUS(status)));
-      else if (WIFSIGNALED(status))
-        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", exit signal: " + std::to_string(WTERMSIG(status)));
-      else if (WIFSTOPPED(status))
-        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", stop signal: " + std::to_string(WSTOPSIG(status)));
-      else
-        throw std::runtime_error("Failed to spawn curl subprocess. Error code: " + std::to_string(retcode) + ", unknown status: " + std::to_string(status));
+      std::string proc_signal = parse_waitpid(status);
+      throw std::runtime_error(error_msg + ": " + error_code + ", process " + proc_signal);
     }
     // close write end of the pipe
     close(pipefd[1]);
@@ -264,8 +271,7 @@ class DownloadProc {
     kill(pid, SIGTERM);
     int status;
     waitpid(pid, &status, 0);
-    int code = ((WIFEXITED(status) ? WEXITSTATUS(status) : (WIFSIGNALED(status) ? -WTERMSIG(status) : 0)));
-    log("killed downloader process. exit code: " + std::to_string(code));
+    log("killed downloader, process " + parse_waitpid(status));
   }
 
  private:
